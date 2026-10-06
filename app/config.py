@@ -9,6 +9,7 @@ DB_PATH = HOME / "papers.db"
 NOTES_DIR = HOME / "notes"
 SURVEYS_DIR = HOME / "surveys"
 ROADMAP_FILE = REPO / "roadmaps.json"
+USER_ROADMAP_FILE = HOME / "my_roadmaps.json"
 STATIC_DIR = REPO / "app" / "static"
 
 STATUSES = ("to_read", "reading", "done")
