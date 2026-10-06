@@ -5,7 +5,7 @@ const POLL_MS = 6000;
 
 export async function render(root, { args, alive }) {
   const id = Number(args[0]);
-  let { paper, note, cards, bibtex } = await api(`/api/papers/${id}`);
+  let { paper, note, cards, bibtex, tracks } = await api(`/api/papers/${id}`);
   let content = note.content;
   let mtime = note.mtime;
   let exists = note.exists;
@@ -28,9 +28,12 @@ export async function render(root, { args, alive }) {
           ${paper.url ? `<a class="btn sm" href="${esc(paper.url)}" target="_blank" rel="noopener">${paper.arxiv_id ? "arXiv" : "원문"} ↗</a>` : ""}
           ${paper.pdf_url ? `<a class="btn sm" href="${esc(paper.pdf_url)}" target="_blank" rel="noopener">PDF ↗</a>` : ""}
           <button class="btn sm" id="bib-btn">BibTeX 복사</button>
+          ${paper.arxiv_id ? `<button class="btn sm" id="refresh-btn" title="제목·저자·초록·분류를 arXiv에서 다시 받아요">정보 새로고침</button>` : ""}
           <span class="grow"></span>
           <button class="btn sm ghost danger" id="delete-btn">삭제</button>
         </div>
+        ${tracks.map((t) => `<div class="paper-meta" style="margin-top:10px">로드맵 <a href="#/roadmap">${esc(t.name)}</a> ${t.position} / ${t.total}번째${
+          t.next ? ` · 다음: <a href="${t.next.paper_id ? `#/paper/${t.next.paper_id}` : `https://arxiv.org/abs/${esc(t.next.arxiv_id)}" target="_blank" rel="noopener`}">${esc(t.next.title)}</a>${t.next.paper_id ? "" : " (아직 라이브러리에 없음)"}` : " · 이 트랙의 마지막 논문"}</div>`).join("")}
         <label class="field" style="margin-top:14px;max-width:460px"><span>태그</span>
           <input class="input" id="tags" placeholder="쉼표로 구분 (예: detection, transformer)" value="${esc(paper.tags)}"></label>
       </div>
@@ -209,6 +212,19 @@ export async function render(root, { args, alive }) {
   $("#bib-btn", root).addEventListener("click", async () => {
     if (await copy(bibtex)) return toast("BibTeX를 복사했어요.");
     extra.innerHTML = `<div class="prompt-box">${esc(bibtex)}</div>`;
+  });
+
+  $("#refresh-btn", root)?.addEventListener("click", async (e) => {
+    e.target.disabled = true;
+    try {
+      await api(`/api/papers/${id}/refresh`, { method: "POST" });
+      toast("arXiv에서 최신 정보를 받아왔어요.");
+      if (dirty) await save();
+      if (alive()) window.dispatchEvent(new HashChangeEvent("hashchange"));
+    } catch (err) {
+      e.target.disabled = false;
+      toast(err.message, "error");
+    }
   });
 
   $("#delete-btn", root).addEventListener("click", async () => {

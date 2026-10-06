@@ -36,10 +36,11 @@ export async function render(root) {
       <div class="toolbar">
         <div class="tabs" id="status-tabs"></div>
         <div class="grow"></div>
-        <input class="input" id="lib-q" placeholder="제목, 저자, 태그로 찾기" style="max-width:260px" value="${esc(state.q)}">
+        <input class="input" id="lib-q" placeholder="제목, 저자, 태그, 노트 본문" style="max-width:260px" value="${esc(state.q)}">
         <select class="select" id="lib-sort" aria-label="정렬">${Object.entries(SORTS).map(([k, [label]]) => `<option value="${k}" ${state.sort === k ? "selected" : ""}>${label}</option>`).join("")}</select>
       </div>
       <div id="lib-list"></div>
+      <div id="note-hits"></div>
     </div>
     <dialog id="add-dialog"><h2>논문 직접 추가</h2>
       <p class="muted small" style="margin-bottom:10px">arXiv 논문은 검색 화면에서 ID나 링크를 붙여넣는 편이 빨라요. 책·블로그·arXiv에 없는 논문은 여기서 추가하세요.</p>
@@ -73,7 +74,7 @@ export async function render(root) {
       list.innerHTML = `<div class="empty"><h3>아직 저장한 논문이 없어요</h3><p>로드맵에서 트랙을 고르거나 arXiv에서 검색해 저장하세요.</p>
         <div class="row"><a class="btn primary" href="#/roadmap">로드맵 보기</a><a class="btn" href="#/search">arXiv 검색</a></div></div>`;
     } else if (!shown.length) {
-      list.innerHTML = `<div class="empty"><h3>조건에 맞는 논문이 없어요</h3><div class="row"><button class="btn" id="clear-filters">필터 지우기</button></div></div>`;
+      list.innerHTML = `<div class="empty" style="padding:24px"><h3>제목·저자·태그가 맞는 논문이 없어요</h3><div class="row"><button class="btn" id="clear-filters">필터 지우기</button></div></div>`;
     } else {
       list.innerHTML = shown.map(row).join("");
     }
@@ -83,12 +84,36 @@ export async function render(root) {
   page.addEventListener("click", (e) => {
     const t = e.target.closest("[data-status],[data-tag],#clear-filters");
     if (!t) return;
-    if (t.id === "clear-filters") Object.assign(state, { status: "all", q: "", tag: "" }), ($("#lib-q", root).value = "");
+    if (t.id === "clear-filters") { Object.assign(state, { status: "all", q: "", tag: "" }); $("#lib-q", root).value = ""; searchNotes(); }
     else if (t.dataset.status) state.status = t.dataset.status;
     else state.tag = state.tag === t.dataset.tag ? "" : t.dataset.tag;
     draw();
   });
-  $("#lib-q", root).addEventListener("input", (e) => { state.q = e.target.value.trim(); draw(); });
+  // 노트·서베이 본문 검색: 입력이 멈춘 뒤에 한 번만 요청한다
+  let searchTimer = null;
+  let searchSeq = 0;
+  const mark = (text, q) => {
+    const i = text.toLowerCase().indexOf(q.toLowerCase());
+    return i < 0 ? esc(text) : `${esc(text.slice(0, i))}<mark>${esc(text.slice(i, i + q.length))}</mark>${esc(text.slice(i + q.length))}`;
+  };
+  const searchNotes = () => {
+    clearTimeout(searchTimer);
+    const box = $("#note-hits", root);
+    const q = state.q;
+    const seq = ++searchSeq;
+    if (q.length < 2) { box.innerHTML = ""; return; }
+    searchTimer = setTimeout(async () => {
+      const hits = await api(`/api/notes/search?q=${encodeURIComponent(q)}`).catch(() => []);
+      if (seq !== searchSeq || !box.isConnected) return;
+      box.innerHTML = hits.length ? `<h2 style="margin:24px 0 10px">노트 본문에서 찾음 <span class="small muted">${hits.length}건</span></h2>
+        ${hits.map((h) => `<div class="paper-row"><div>
+          <a class="paper-title" href="${h.kind === "note" ? `#/paper/${h.paper_id}` : `#/surveys/${esc(h.name)}`}">${esc(h.title)}</a>
+          ${h.kind === "survey" ? ` <span class="chip">서베이</span>` : ""}
+          ${h.snippets.map((line) => `<div class="abstract" style="margin-top:4px">${mark(line, q)}</div>`).join("")}</div></div>`).join("")}` : "";
+    }, 250);
+  };
+  $("#lib-q", root).addEventListener("input", (e) => { state.q = e.target.value.trim(); draw(); searchNotes(); });
+  searchNotes();
   $("#lib-sort", root).addEventListener("change", (e) => { state.sort = e.target.value; draw(); });
 
   page.addEventListener("change", async (e) => {
@@ -129,7 +154,7 @@ export async function render(root) {
     if (!file.files[0]) return;
     try {
       const result = await api("/api/import", { method: "POST", body: JSON.parse(await file.files[0].text()) });
-      toast(`${result.added}편 추가, ${result.skipped}편은 이미 있어서 건너뛰었어요.`);
+      toast(`${result.added}편 추가, ${result.skipped}편은 이미 있어서 건너뛰었어요.${result.tracks_added ? ` 내 트랙 ${result.tracks_added}개도 복원했어요.` : ""}`);
       papers = await api("/api/papers");
       draw();
     } catch (err) {

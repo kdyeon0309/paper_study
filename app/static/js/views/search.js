@@ -66,6 +66,7 @@ async function run(root, append = false) {
   btn.disabled = false;
   btn.textContent = "검색";
   draw(root);
+  root.dispatchEvent(new CustomEvent("searched"));
 }
 
 export async function render(root, { query }) {
@@ -80,11 +81,53 @@ export async function render(root, { query }) {
           <option value="recent" ${state.sort === "recent" ? "selected" : ""}>최신순</option></select>
         <button class="btn primary" id="search-btn" type="submit">검색</button>
       </form>
+      <div id="saved" class="row" style="margin:10px 0 4px"></div>
       <div id="results"></div>
     </div>`;
   draw(root);
   const input = $("#search-input", root);
   input.focus();
+
+  // 저장한 검색: 관심 주제를 한 번에 최신순으로 다시 본다
+  let saved = await api("/api/searches").catch(() => []);
+  const catLabel = (cat) => (cat ? ` · ${cat}` : "");
+  const drawSaved = () => {
+    const box = $("#saved", root);
+    if (!box) return;
+    const current = saved.some((x) => x.q === state.q && x.cat === state.cat);
+    box.innerHTML = saved.map((x) => `<span class="chip tag" style="padding-right:4px">
+        <button class="linkish" data-run="${x.id}" title="최신순으로 검색" style="color:inherit;font-size:12px">${esc(x.q)}${esc(catLabel(x.cat))}</button>
+        <button class="icon-btn" data-unsave="${x.id}" aria-label="저장한 검색 삭제" style="width:18px;height:18px;font-size:11px">✕</button></span>`).join("")
+      + (state.searched && state.q && !current && !state.error ? `<button class="btn sm ghost" id="save-search">＋ 이 검색 저장</button>` : "")
+      + (saved.length ? "" : state.searched ? "" : `<span class="small muted">자주 보는 주제는 검색한 뒤 저장해두면 여기서 한 번에 최신 논문을 볼 수 있어요.</span>`);
+  };
+  drawSaved();
+  $("#saved", root).addEventListener("click", async (e) => {
+    const t = e.target;
+    try {
+      if (t.id === "save-search") {
+        const item = await api("/api/searches", { method: "POST", body: { q: state.q, cat: state.cat } });
+        if (!saved.some((x) => x.id === item.id)) saved.push(item);
+        toast("검색을 저장했어요.");
+      } else if (t.dataset.unsave) {
+        await api(`/api/searches/${t.dataset.unsave}`, { method: "DELETE" });
+        saved = saved.filter((x) => x.id !== Number(t.dataset.unsave));
+      } else if (t.dataset.run) {
+        const item = saved.find((x) => x.id === Number(t.dataset.run));
+        input.value = item.q;
+        $("#search-cat", root).value = item.cat;
+        $("#search-sort", root).value = "recent";
+        submit();
+        return;
+      } else return;
+    } catch (err) {
+      toast(err.message, "error");
+    }
+    drawSaved();
+  });
+
+  const onSearched = () => drawSaved();
+  root.addEventListener("searched", onSearched);
 
   const submit = () => {
     state.q = input.value.trim();
@@ -127,4 +170,5 @@ export async function render(root, { query }) {
     input.value = query.get("q");
     submit();
   }
+  return () => root.removeEventListener("searched", onSearched);
 }
