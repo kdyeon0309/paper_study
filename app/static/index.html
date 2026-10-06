@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Paper Study</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>📚 Paper Study</h1>
+    <span class="hint">검색: arXiv API (무료) · 깊은 요약: Claude Code로 notes/ 에 작성</span>
+  </header>
+
+  <main>
+    <section id="search-panel">
+      <form id="search-form">
+        <input id="search-input" placeholder="arXiv 검색. 예: open vocabulary detection">
+        <button id="search-btn" type="submit">검색</button>
+      </form>
+      <div id="results"></div>
+    </section>
+
+    <aside id="library-panel">
+      <div class="library-header">
+        <h2>논문 라이브러리</h2>
+        <button id="add-paper-btn" title="직접 추가">＋</button>
+      </div>
+      <div id="paper-list"></div>
+    </aside>
+  </main>
+
+  <dialog id="paper-dialog">
+    <form id="paper-form" method="dialog">
+      <h3>논문 추가</h3>
+      <input name="title" placeholder="제목 (필수)" required>
+      <input name="authors" placeholder="저자">
+      <input name="year" type="number" placeholder="연도">
+      <input name="url" placeholder="URL">
+      <input name="tags" placeholder="태그 (쉼표 구분)">
+      <textarea name="summary" placeholder="한 줄 요약" rows="2"></textarea>
+      <div class="dialog-actions">
+        <button type="button" id="paper-cancel">취소</button>
+        <button type="submit">저장</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="note-dialog">
+    <div id="note-content" class="note-content"></div>
+    <div class="dialog-actions"><button id="note-close">닫기</button></div>
+  </dialog>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
