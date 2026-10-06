@@ -5,7 +5,7 @@ import unittest
 from datetime import date, timedelta
 from pathlib import Path
 
-from app import arxiv, config, db, exporter, notes, review
+from app import arxiv, config, db, exporter, notes, review, roadmaps
 
 FEED = """<?xml version='1.0' encoding='UTF-8'?>
 <feed xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/" xmlns:arxiv="http://arxiv.org/schemas/atom" xmlns="http://www.w3.org/2005/Atom">
@@ -31,13 +31,15 @@ class TempHome(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         home = Path(self._tmp.name)
-        self._saved = (config.HOME, config.DB_PATH, config.NOTES_DIR, config.SURVEYS_DIR)
+        self._saved = {k: getattr(config, k) for k in ("HOME", "DB_PATH", "NOTES_DIR", "SURVEYS_DIR", "USER_ROADMAP_FILE")}
         config.HOME, config.DB_PATH = home, home / "papers.db"
         config.NOTES_DIR, config.SURVEYS_DIR = home / "notes", home / "surveys"
+        config.USER_ROADMAP_FILE = home / "my_roadmaps.json"
         db.init()
 
     def tearDown(self):
-        config.HOME, config.DB_PATH, config.NOTES_DIR, config.SURVEYS_DIR = self._saved
+        for key, value in self._saved.items():
+            setattr(config, key, value)
         self._tmp.cleanup()
 
     def paper(self, **over):
@@ -292,17 +294,153 @@ class ExportTest(TempHome):
         p = self.paper(tags="detr")
         notes.write(p, "# my note\n", None)
         db.add_paper({"title": "Manual entry"})
+        roadmaps.create("내 트랙", "새 영역")
+        roadmaps.add_paper("my-1", {"arxiv_id": "2010.11929", "title": "ViT"}, "이유")
+        db.save_search("open vocabulary", "cs.CV")
         backup = exporter.export_all()
 
         self.tearDown()
         self.setUp()
-        self.assertEqual(exporter.import_all(backup), {"added": 2, "skipped": 0, "notes_written": 1})
-        self.assertEqual(exporter.import_all(backup), {"added": 0, "skipped": 2, "notes_written": 0},
+        self.assertEqual(exporter.import_all(backup), {"added": 2, "skipped": 0, "notes_written": 1, "tracks_added": 1})
+        self.assertEqual(exporter.import_all(backup), {"added": 0, "skipped": 2, "notes_written": 0, "tracks_added": 0},
                          "importing the same backup twice adds nothing")
+        mine = roadmaps.user_tracks()
+        self.assertEqual([(t["name"], t["kind"], [p["why"] for p in t["papers"]]) for t in mine], [("내 트랙", "새 영역", ["이유"])])
+        self.assertEqual([(x["q"], x["cat"]) for x in db.saved_searches()], [("open vocabulary", "cs.CV")])
+        self.assertEqual(exporter.import_all({"papers": []})["tracks_added"], 0, "v0.2 backups have no tracks")
         restored = db.find_paper("2111.14330")
         self.assertEqual((restored["tags"], notes.read(restored)["content"]), ("detr", "# my note\n"))
         with self.assertRaises(ValueError):
             exporter.import_all({"something": "else"})
+
+
+class InsightTest(TempHome):
+    def test_weak_cards_and_tag_accuracy(self):
+        today = date(2026, 10, 7)
+        a = self.paper(tags="detr, detection")
+        b = db.add_paper({"title": "Adam", "url": "https://arxiv.org/abs/1412.6980", "tags": "optimization"})[0]
+        c = db.add_paper({"title": "Untagged"})[0]
+        db.sync_cards(a["id"], [("a1", "x"), ("a2", "x")], today)
+        db.sync_cards(b["id"], [("b1", "x")], today)
+        db.sync_cards(c["id"], [("c1", "x")], today)
+        ids = {card["question"]: card["id"] for card in db.due_cards(today)}
+        for question, grades in {"a1": ["again", "again", "good"], "a2": ["good"], "b1": ["good", "good"], "c1": ["again"]}.items():
+            for grade in grades:
+                db.grade_card(ids[question], grade, today)
+
+        weak = db.weak_cards()
+        self.assertEqual([(w["question"], w["lapses"], w["reviews"]) for w in weak], [("c1", 1, 1), ("a1", 2, 3)])
+        tags = {t["tag"]: t for t in db.tag_accuracy()}
+        self.assertEqual(set(tags), {"detr", "detection", "optimization", ""})
+        self.assertEqual((tags["detr"]["reviews"], tags["detr"]["lapses"]), (4, 2))
+        self.assertEqual(tags["optimization"]["accuracy"], 1.0)
+        self.assertEqual(db.tag_accuracy()[0]["tag"], "", "weakest group first")
+
+    def test_weekly_runs_monday_to_sunday_and_compares(self):
+        wednesday = date(2026, 10, 7)
+        p = self.paper()
+        with db.connect() as conn:
+            conn.execute("DELETE FROM activity")
+            for day, kind, detail in [("2026-10-05", "added", ""), ("2026-10-05", "review", "good"),
+                                      ("2026-10-07", "review", "again"), ("2026-10-07", "note", ""),
+                                      ("2026-10-04", "review", "good"), ("2026-09-28", "added", "")]:
+                db.log(conn, kind, p["id"], detail, day=day)
+            conn.execute("UPDATE papers SET status='done', finished_at='2026-10-06' WHERE id=?", (p["id"],))
+        week = db.weekly(wednesday)
+        self.assertEqual((week["start"], week["end"]), ("2026-10-05", "2026-10-11"))
+        self.assertEqual(week["current"], {"added": 1, "finished": 1, "notes": 1, "reviews": 2, "accuracy": 0.5, "active_days": 2})
+        self.assertEqual(week["previous"]["reviews"], 1, "Sunday the 4th belongs to the previous week")
+        self.assertEqual(week["previous"]["added"], 1)
+        self.assertEqual([d["count"] for d in week["days"]], [2, 0, 2, 0, 0, 0, 0])
+        self.assertEqual([f["title"] for f in week["finished"]], ["Sparse DETR"])
+        last = db.weekly(wednesday, offset=-1)
+        self.assertEqual((last["start"], last["current"]["reviews"], last["current"]["accuracy"]), ("2026-09-28", 1, 1.0))
+        self.assertIsNone(db.weekly(wednesday, offset=-5)["current"]["accuracy"])
+
+    def test_metadata_refresh_keeps_user_fields(self):
+        p = self.paper(tags="mine", status="reading")
+        updated = db.set_metadata(p["id"], {"title": "Sparse DETR: Full Title", "categories": "cs.CV", "abstract": "new",
+                                             "tags": "ignored", "status": "done", "comment": ""})
+        self.assertEqual((updated["title"], updated["categories"], updated["abstract"]), ("Sparse DETR: Full Title", "cs.CV", "new"))
+        self.assertEqual((updated["tags"], updated["status"], updated["slug"]), ("mine", "reading", "2111.14330"))
+
+    def test_note_search(self):
+        p = self.paper()
+        notes.write(p, "# Sparse DETR\n\n## 핵심\nEncoder 토큰의 일부만 갱신한다.\n다른 줄\n", None)
+        config.SURVEYS_DIR.mkdir()
+        (config.SURVEYS_DIR / "detr-family.md").write_text("# DETR 계보\n\nencoder 병목을 줄이는 흐름\n", encoding="utf-8")
+        hits = notes.search("  ENCODER ")
+        self.assertEqual([(h["kind"], h["title"]) for h in hits], [("note", "Sparse DETR"), ("survey", "DETR 계보")])
+        self.assertEqual(hits[0]["snippets"], ["Encoder 토큰의 일부만 갱신한다."])
+        self.assertEqual(hits[0]["paper_id"], p["id"])
+        self.assertEqual(notes.search("없는말"), [])
+        self.assertEqual(notes.search("e"), [], "one-character queries are ignored")
+
+    def test_saved_searches(self):
+        first = db.save_search("  open   vocabulary ", "cs.CV")
+        self.assertEqual((first["q"], first["cat"]), ("open vocabulary", "cs.CV"))
+        self.assertEqual(db.save_search("open vocabulary", "cs.CV")["id"], first["id"], "same search is stored once")
+        db.save_search("open vocabulary")
+        self.assertEqual([(x["q"], x["cat"]) for x in db.saved_searches()], [("open vocabulary", "cs.CV"), ("open vocabulary", "")])
+        with self.assertRaises(ValueError):
+            db.save_search("   ")
+        self.assertTrue(db.delete_search(first["id"]))
+        self.assertFalse(db.delete_search(first["id"]))
+        self.assertEqual(len(db.saved_searches()), 1)
+
+    def test_old_cards_table_gains_counters(self):
+        with db.connect() as conn:
+            conn.executescript("DROP TABLE cards; CREATE TABLE cards (id INTEGER PRIMARY KEY, paper_id INTEGER, "
+                               "question TEXT, answer TEXT, box INTEGER DEFAULT 0, due TEXT, last_reviewed TEXT, "
+                               "UNIQUE (paper_id, question));")
+        db.init()
+        p = self.paper()
+        db.sync_cards(p["id"], [("q", "a")])
+        card = db.grade_card(db.cards_for(p["id"])[0]["id"], "again")
+        self.assertEqual((card["reviews"], card["lapses"]), (1, 1))
+
+
+class RoadmapTest(TempHome):
+    ITEM = {"arxiv_id": "2010.11929", "title": "ViT", "authors": "A, B", "year": 2020}
+
+    def test_user_tracks(self):
+        builtin = len(roadmaps.all_tracks())
+        self.assertGreater(builtin, 0)
+        t = roadmaps.create("  내  트랙 ", "새 영역", "설명")
+        self.assertEqual((t["key"], t["name"]), ("my-1", "내 트랙"))
+        self.assertEqual(roadmaps.create("둘째")["key"], "my-2")
+        listed = roadmaps.all_tracks()
+        self.assertEqual([x["key"] for x in listed[:2]], ["my-2", "my-1"])
+        self.assertEqual([x["editable"] for x in listed[:3]], [True, True, False])
+
+        roadmaps.add_paper("my-1", self.ITEM, " 이유 ")
+        roadmaps.add_paper("my-1", {**self.ITEM, "arxiv_id": "1706.03762", "title": "Attention"})
+        with self.assertRaises(ValueError):
+            roadmaps.add_paper("my-1", self.ITEM)
+        order = lambda: [p["arxiv_id"] for p in roadmaps.all_tracks()[1]["papers"]]
+        self.assertEqual(order(), ["2010.11929", "1706.03762"])
+        roadmaps.edit_paper("my-1", "1706.03762", why="먼저 읽기", move=-1)
+        self.assertEqual(order(), ["1706.03762", "2010.11929"])
+        roadmaps.edit_paper("my-1", "1706.03762", move=-1)  # already first: stays
+        self.assertEqual(order(), ["1706.03762", "2010.11929"])
+        self.assertEqual(roadmaps.all_tracks()[1]["papers"][0]["why"], "먼저 읽기")
+        roadmaps.remove_paper("my-1", "1706.03762")
+        self.assertEqual(order(), ["2010.11929"])
+
+        self.assertEqual(roadmaps.update("my-1", {"name": "새 이름"})["name"], "새 이름")
+        with self.assertRaises(ValueError):
+            roadmaps.update("my-1", {"name": "  "})
+        with self.assertRaises(ValueError):
+            roadmaps.update("my-1", {"kind": "기타"})
+        roadmaps.delete("my-2")
+        self.assertEqual(len(roadmaps.all_tracks()), builtin + 1)
+
+    def test_builtin_tracks_are_read_only(self):
+        key = roadmaps.all_tracks()[0]["key"]
+        for call in (lambda: roadmaps.update(key, {"name": "x"}), lambda: roadmaps.delete(key),
+                     lambda: roadmaps.add_paper(key, self.ITEM), lambda: roadmaps.remove_paper("my-9", "x")):
+            with self.assertRaises(KeyError):
+                call()
 
 
 if __name__ == "__main__":
