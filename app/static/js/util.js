@@ -117,7 +117,8 @@ function setupPurify() {
 }
 
 const CODE = /(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`)/g;
-const MATH = /\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\$(?!\s)((?:\\.|[^$\\\n])+?)(?<!\s)\$(?!\d)/g;
+// 인라인 수식은 공백으로 시작하거나 끝나지 않는다($5 와 $10 같은 금액과 구분). 구형 Safari를 위해 lookbehind는 쓰지 않는다.
+const MATH = /\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\$(?!\s)((?:\\.|[^$\\\n])*?(?:\\.|[^\s$\\]))\$(?!\d)/g;
 
 function renderMath({ tex, display }) {
   if (!window.katex) return `<code>${esc(tex)}</code>`;
