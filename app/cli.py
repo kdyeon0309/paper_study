@@ -6,6 +6,7 @@
     python -m app.cli show 2010.11929        # metadata, abstract, note path
     python -m app.cli pending                 # papers waiting for a note
     python -m app.cli status 2010.11929 done
+    python -m app.cli refresh                 # 분류·초록이 빈 arXiv 논문의 정보를 다시 받기
 """
 import argparse
 import sys
@@ -81,6 +82,19 @@ def cmd_status(args):
     print(_line(db.update_paper(p["id"], {"status": args.status})))
 
 
+def cmd_refresh(args):
+    targets = [p for p in db.list_papers() if p["arxiv_id"] and (args.all or not p["categories"] or not p["abstract"])]
+    if not targets:
+        print("새로 받을 논문이 없어요.")
+        return
+    fetched = {i["arxiv_id"]: i for i in arxiv.fetch([p["arxiv_id"] for p in targets])}
+    for p in targets:
+        if p["arxiv_id"] in fetched:
+            print("갱신   ", _line(db.set_metadata(p["id"], fetched[p["arxiv_id"]])))
+        else:
+            print("못 찾음", _line(p))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="python -m app.cli", description="Paper Study 라이브러리 CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -110,6 +124,10 @@ def main(argv=None):
     s.add_argument("ref")
     s.add_argument("status", choices=config.STATUSES)
     s.set_defaults(func=cmd_status)
+
+    s = sub.add_parser("refresh", help="arXiv에서 논문 정보 다시 받기")
+    s.add_argument("--all", action="store_true", help="정보가 있는 논문도 모두")
+    s.set_defaults(func=cmd_refresh)
 
     args = parser.parse_args(argv)
     db.init()

@@ -153,3 +153,37 @@ def read_survey(name: str) -> str | None:
         return None
     path = config.SURVEYS_DIR / f"{name}.md"
     return path.read_text(encoding="utf-8") if path.exists() else None
+
+
+# ---------- full-text search ----------
+
+def _snippets(text: str, needle: str, limit: int = 3) -> list[str]:
+    found = []
+    for line in text.splitlines():
+        clean = line.strip()
+        pos = clean.casefold().find(needle)
+        if pos < 0:
+            continue
+        lo = max(0, pos - 60)
+        found.append(("…" if lo else "") + clean[lo:pos + len(needle) + 100] + ("…" if len(clean) > pos + len(needle) + 100 else ""))
+        if len(found) == limit:
+            break
+    return found
+
+
+def search(query: str) -> list[dict]:
+    """Find notes and surveys whose text contains the query (case-insensitive substring)."""
+    # ponytail: 매 요청마다 파일을 전부 읽는다. 노트 수천 개까지는 충분하고, 느려지면 SQLite FTS5로 옮긴다.
+    needle = " ".join(query.split()).casefold()
+    if len(needle) < 2:
+        return []
+    results = []
+    for paper in db.list_papers():
+        path = note_path(paper["slug"])
+        if path.exists() and (hits := _snippets(path.read_text(encoding="utf-8"), needle)):
+            results.append({"kind": "note", "paper_id": paper["id"], "title": paper["title"], "snippets": hits})
+    for survey in list_surveys():
+        text = (config.SURVEYS_DIR / f"{survey['name']}.md").read_text(encoding="utf-8")
+        if hits := _snippets(text, needle):
+            results.append({"kind": "survey", "name": survey["name"], "title": survey["title"], "snippets": hits})
+    return results

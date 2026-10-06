@@ -2,7 +2,7 @@
 import re
 import unicodedata
 
-from . import db, notes
+from . import db, notes, roadmaps
 
 _STOP = {"a", "an", "the", "on", "of", "for", "to", "in", "and", "with", "is", "are", "towards", "toward"}
 
@@ -52,7 +52,9 @@ def export_all() -> dict:
         if note["exists"]:
             item["note"] = note["content"]
         items.append(item)
-    return {"app": "paper-study", "version": 2, "papers": items}
+    return {"app": "paper-study", "version": 3, "papers": items,
+            "tracks": roadmaps.user_tracks(),
+            "searches": [{"q": s["q"], "cat": s["cat"]} for s in db.saved_searches()]}
 
 
 def import_all(data: dict) -> dict:
@@ -73,4 +75,8 @@ def import_all(data: dict) -> dict:
         if isinstance(item.get("note"), str) and not notes.read(paper)["exists"]:
             notes.write(paper, item["note"], None)
             notes_written += 1
-    return {"added": added, "skipped": skipped, "notes_written": notes_written}
+    for search in data.get("searches") or []:
+        if isinstance(search, dict) and str(search.get("q") or "").strip():
+            db.save_search(str(search["q"]), str(search.get("cat") or ""))
+    return {"added": added, "skipped": skipped, "notes_written": notes_written,
+            "tracks_added": roadmaps.restore(data.get("tracks") or [])}

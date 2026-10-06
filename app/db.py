@@ -39,6 +39,8 @@ CREATE TABLE IF NOT EXISTS cards (
     box INTEGER NOT NULL DEFAULT 0,
     due TEXT NOT NULL,
     last_reviewed TEXT,
+    reviews INTEGER NOT NULL DEFAULT 0,
+    lapses INTEGER NOT NULL DEFAULT 0,
     UNIQUE (paper_id, question)
 );
 CREATE TABLE IF NOT EXISTS activity (
@@ -50,6 +52,13 @@ CREATE TABLE IF NOT EXISTS activity (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_activity_day ON activity(day);
+CREATE TABLE IF NOT EXISTS saved_searches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    q TEXT NOT NULL,
+    cat TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    UNIQUE (q, cat)
+);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_papers_slug ON papers(slug);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_papers_arxiv ON papers(arxiv_id) WHERE arxiv_id IS NOT NULL;
 """
@@ -99,6 +108,10 @@ def init():
             "WHERE arxiv_id IS NOT NULL AND COALESCE(pdf_url, '') = ''"
         )
         conn.executescript(SCHEMA)
+        card_cols = {r["name"] for r in conn.execute("PRAGMA table_info(cards)")}
+        for name in ("reviews", "lapses"):  # v0.3
+            if name not in card_cols:
+                conn.execute(f"ALTER TABLE cards ADD COLUMN {name} INTEGER NOT NULL DEFAULT 0")
 
 
 def normalize_tags(tags: str | None) -> str:
@@ -207,6 +220,22 @@ def update_paper(paper_id: int, fields: dict) -> dict | None:
         return dict(conn.execute("SELECT * FROM papers WHERE id=?", (paper_id,)).fetchone())
 
 
+METADATA = ("title", "authors", "year", "published", "abstract", "categories", "comment", "url", "pdf_url")
+
+
+def set_metadata(paper_id: int, item: dict) -> dict | None:
+    """Overwrite bibliographic fields with what arXiv says now. Tags, status and notes are untouched."""
+    updates = {k: item[k] for k in METADATA if item.get(k)}
+    if not updates:
+        return get_paper(paper_id)
+    updates["updated_at"] = _now()
+    with connect() as conn:
+        sets = ", ".join(f"{k}=?" for k in updates)
+        conn.execute(f"UPDATE papers SET {sets} WHERE id=?", (*updates.values(), paper_id))
+        row = conn.execute("SELECT * FROM papers WHERE id=?", (paper_id,)).fetchone()
+        return dict(row) if row else None
+
+
 def set_note_state(paper_id: int, mtime: float | None, clear_request: bool):
     with connect() as conn:
         conn.execute(
@@ -218,6 +247,27 @@ def set_note_state(paper_id: int, mtime: float | None, clear_request: bool):
 def delete_paper(paper_id: int) -> bool:
     with connect() as conn:
         return conn.execute("DELETE FROM papers WHERE id=?", (paper_id,)).rowcount > 0
+
+
+# ---------- saved searches ----------
+
+def saved_searches() -> list[dict]:
+    with connect() as conn:
+        return [dict(r) for r in conn.execute("SELECT id, q, cat FROM saved_searches ORDER BY id")]
+
+
+def save_search(q: str, cat: str = "") -> dict:
+    q = " ".join(q.split())
+    if not q:
+        raise ValueError("검색어를 적어주세요.")
+    with connect() as conn:
+        conn.execute("INSERT OR IGNORE INTO saved_searches (q, cat, created_at) VALUES (?,?,?)", (q, cat, _now()))
+        return dict(conn.execute("SELECT id, q, cat FROM saved_searches WHERE q=? AND cat=?", (q, cat)).fetchone())
+
+
+def delete_search(search_id: int) -> bool:
+    with connect() as conn:
+        return conn.execute("DELETE FROM saved_searches WHERE id=?", (search_id,)).rowcount > 0
 
 
 # ---------- cards ----------
@@ -264,8 +314,9 @@ def grade_card(card_id: int, grade: str, today: date | None = None) -> dict | No
         if not row:
             return None
         box, due = review.next_state(row["box"], grade, today)
-        conn.execute("UPDATE cards SET box=?, due=?, last_reviewed=? WHERE id=?",
-                     (box, due.isoformat(), today.isoformat(), card_id))
+        conn.execute(
+            "UPDATE cards SET box=?, due=?, last_reviewed=?, reviews=reviews+1, lapses=lapses+? WHERE id=?",
+            (box, due.isoformat(), today.isoformat(), int(grade == "again"), card_id))
         log(conn, "review", row["paper_id"], grade, day=today.isoformat())
         return dict(conn.execute("SELECT * FROM cards WHERE id=?", (card_id,)).fetchone())
 
@@ -302,3 +353,69 @@ def stats(today: date | None = None, weeks: int = 20) -> dict:
         "heatmap": {"start": start.isoformat(), "end": today.isoformat(), "days": days},
         "recent": recent,
     }
+
+
+def weak_cards(limit: int = 30) -> list[dict]:
+    """Cards missed at least once, worst miss rate first."""
+    with connect() as conn:
+        rows = conn.execute(
+            """SELECT c.*, p.title AS paper_title FROM cards c JOIN papers p ON p.id = c.paper_id
+               WHERE c.lapses > 0 ORDER BY CAST(c.lapses AS REAL) / c.reviews DESC, c.lapses DESC, c.id LIMIT ?""",
+            (limit,))
+        return [dict(r) for r in rows]
+
+
+def tag_accuracy() -> list[dict]:
+    """Review accuracy grouped by paper tag, weakest first. Untagged papers are grouped under ''."""
+    totals: dict[str, list[int]] = {}
+    with connect() as conn:
+        rows = conn.execute(
+            """SELECT p.tags, SUM(c.reviews) AS reviews, SUM(c.lapses) AS lapses FROM cards c
+               JOIN papers p ON p.id = c.paper_id GROUP BY p.id HAVING SUM(c.reviews) > 0""")
+        for r in rows:
+            for tag in [t.strip() for t in (r["tags"] or "").split(",") if t.strip()] or [""]:
+                bucket = totals.setdefault(tag, [0, 0])
+                bucket[0] += r["reviews"]
+                bucket[1] += r["lapses"]
+    result = [{"tag": t, "reviews": n, "lapses": miss, "accuracy": (n - miss) / n} for t, (n, miss) in totals.items()]
+    return sorted(result, key=lambda x: (x["accuracy"], -x["reviews"]))
+
+
+def weekly(today: date | None = None, offset: int = 0) -> dict:
+    """One Monday-to-Sunday week of study, with the week before it for comparison."""
+    today = today or date.today()
+    start = today - timedelta(days=today.weekday()) + timedelta(weeks=offset)
+
+    def summarize(conn, first: date) -> dict:
+        a, b = first.isoformat(), (first + timedelta(days=6)).isoformat()
+        kinds = {r["kind"]: r["n"] for r in conn.execute(
+            "SELECT kind, COUNT(*) n FROM activity WHERE day BETWEEN ? AND ? GROUP BY kind", (a, b))}
+        one = lambda sql: conn.execute(sql, (a, b)).fetchone()[0]
+        reviews = kinds.get("review", 0)
+        missed = one("SELECT COUNT(*) FROM activity WHERE kind='review' AND detail='again' AND day BETWEEN ? AND ?")
+        return {
+            "added": kinds.get("added", 0),
+            "finished": one("SELECT COUNT(*) FROM papers WHERE status='done' AND finished_at BETWEEN ? AND ?"),
+            "notes": one("SELECT COUNT(DISTINCT paper_id) FROM activity WHERE kind='note' AND day BETWEEN ? AND ?"),
+            "reviews": reviews,
+            "accuracy": (reviews - missed) / reviews if reviews else None,
+            "active_days": one("SELECT COUNT(DISTINCT day) FROM activity WHERE day BETWEEN ? AND ?"),
+        }
+
+    with connect() as conn:
+        a, b = start.isoformat(), (start + timedelta(days=6)).isoformat()
+        days = {r["day"]: r["n"] for r in conn.execute(
+            "SELECT day, COUNT(*) n FROM activity WHERE day BETWEEN ? AND ? GROUP BY day", (a, b))}
+        finished = [dict(r) for r in conn.execute(
+            "SELECT id, title FROM papers WHERE status='done' AND finished_at BETWEEN ? AND ? ORDER BY finished_at", (a, b))]
+        noted = [dict(r) for r in conn.execute(
+            """SELECT DISTINCT p.id, p.title FROM activity a JOIN papers p ON p.id = a.paper_id
+               WHERE a.kind='note' AND a.day BETWEEN ? AND ? ORDER BY p.title""", (a, b))]
+        return {
+            "start": a, "end": b, "offset": offset, "is_current": offset == 0,
+            "current": summarize(conn, start),
+            "previous": summarize(conn, start - timedelta(weeks=1)),
+            "days": [{"day": (start + timedelta(days=i)).isoformat(),
+                      "count": days.get((start + timedelta(days=i)).isoformat(), 0)} for i in range(7)],
+            "finished": finished, "noted": noted,
+        }
