@@ -1,0 +1,309 @@
+"""Run with: python -m unittest discover -s tests -v   (no network, no extra packages)"""
+import sqlite3
+import tempfile
+import unittest
+from datetime import date, timedelta
+from pathlib import Path
+
+from app import arxiv, config, db, exporter, notes, review
+
+FEED = """<?xml version='1.0' encoding='UTF-8'?>
+<feed xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/" xmlns:arxiv="http://arxiv.org/schemas/atom" xmlns="http://www.w3.org/2005/Atom">
+  <opensearch:totalResults>731</opensearch:totalResults>
+  <entry>
+    <id>http://arxiv.org/abs/2010.11929v2</id>
+    <title>An Image is Worth 16x16 Words:
+      Transformers for Image Recognition at Scale</title>
+    <published>2020-10-22T17:55:59Z</published>
+    <summary>  While the Transformer architecture has become
+    the de-facto standard.  </summary>
+    <author><name>Alexey Dosovitskiy</name></author>
+    <author><name>Lucas Beyer</name></author>
+    <arxiv:comment>ICLR camera-ready</arxiv:comment>
+    <arxiv:primary_category term="cs.CV"/>
+    <category term="cs.AI"/><category term="cs.CV"/>
+  </entry>
+  <entry><id>http://arxiv.org/api/errors#incorrect_id</id><title>Error</title><summary>bad id</summary></entry>
+</feed>"""
+
+
+class TempHome(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        home = Path(self._tmp.name)
+        self._saved = (config.HOME, config.DB_PATH, config.NOTES_DIR, config.SURVEYS_DIR)
+        config.HOME, config.DB_PATH = home, home / "papers.db"
+        config.NOTES_DIR, config.SURVEYS_DIR = home / "notes", home / "surveys"
+        db.init()
+
+    def tearDown(self):
+        config.HOME, config.DB_PATH, config.NOTES_DIR, config.SURVEYS_DIR = self._saved
+        self._tmp.cleanup()
+
+    def paper(self, **over):
+        data = {"title": "Sparse DETR", "authors": "Byungseok Roh, JaeWoong Shin", "year": 2021,
+                "url": "https://arxiv.org/abs/2111.14330v2", "categories": "cs.CV, cs.LG"}
+        return db.add_paper({**data, **over})[0]
+
+
+class ArxivTest(unittest.TestCase):
+    def test_parse_id(self):
+        cases = {
+            "2111.14330": "2111.14330",
+            "https://arxiv.org/abs/2111.14330v2": "2111.14330",
+            "http://arxiv.org/pdf/2010.11929.pdf": "2010.11929",
+            "arXiv:1706.03762": "1706.03762",
+            "https://arxiv.org/abs/hep-th/9901001v1": "hep-th/9901001",
+            "open vocabulary detection": None,
+            "yolo 2024": None,
+            "": None,
+        }
+        for text, want in cases.items():
+            self.assertEqual(arxiv.parse_id(text), want, text)
+
+    def test_looks_like_id(self):
+        self.assertTrue(arxiv.looks_like_id(" 2111.14330 "))
+        self.assertTrue(arxiv.looks_like_id("https://arxiv.org/abs/2111.14330"))
+        self.assertFalse(arxiv.looks_like_id("DETR 2111.14330 follow-ups"))
+        self.assertFalse(arxiv.looks_like_id("object detection"))
+
+    def test_build_query(self):
+        self.assertEqual(arxiv.build_query("open vocabulary"), "all:open AND all:vocabulary")
+        self.assertEqual(arxiv.build_query('"gaussian splatting" slam', "cs.CV"),
+                         'cat:cs.CV AND (all:"gaussian splatting" AND all:slam)')
+        self.assertEqual(arxiv.build_query("  ", "cs.CV"), "cat:cs.CV")
+        self.assertEqual(arxiv.build_query("a) OR all:x"), "all:a AND all:OR AND all:all AND all:x")
+
+    def test_parse_feed(self):
+        result = arxiv.parse_feed(FEED)
+        self.assertEqual(result["total"], 731)
+        self.assertEqual(len(result["items"]), 1, "the arXiv error entry must be dropped")
+        item = result["items"][0]
+        self.assertEqual(item["arxiv_id"], "2010.11929")
+        self.assertEqual(item["title"], "An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale")
+        self.assertEqual(item["authors"], "Alexey Dosovitskiy, Lucas Beyer")
+        self.assertEqual((item["year"], item["published"]), (2020, "2020-10-22"))
+        self.assertEqual(item["categories"], "cs.CV, cs.AI", "primary category comes first")
+        self.assertEqual(item["url"], "https://arxiv.org/abs/2010.11929")
+        self.assertTrue(item["abstract"].startswith("While the Transformer"))
+
+
+class ReviewTest(unittest.TestCase):
+    def test_schedule(self):
+        today = date(2026, 10, 7)
+        self.assertEqual(review.next_state(0, "good", today), (1, today + timedelta(days=3)))
+        self.assertEqual(review.next_state(2, "hard", today), (2, today + timedelta(days=7)))
+        self.assertEqual(review.next_state(4, "again", today), (0, today + timedelta(days=1)))
+        self.assertEqual(review.next_state(5, "good", today), (5, today + timedelta(days=60)), "top box is capped")
+        with self.assertRaises(ValueError):
+            review.next_state(0, "easy", today)
+
+    def test_streak(self):
+        today = date(2026, 10, 7)
+        days = lambda *offsets: {(today - timedelta(days=o)).isoformat() for o in offsets}
+        self.assertEqual(review.streak(days(0, 1, 2), today), 3)
+        self.assertEqual(review.streak(days(1, 2), today), 2, "today not studied yet keeps the streak alive")
+        self.assertEqual(review.streak(days(2, 3), today), 0)
+        self.assertEqual(review.streak(set(), today), 0)
+
+
+class CardParseTest(unittest.TestCase):
+    def test_parse(self):
+        text = """# Note
+본문에 Q: 가 섞여 있어도 A가 바로 안 오면 카드가 아니다.
+
+## 복습 카드
+Q: DETR에 NMS가 필요 없는 이유는?
+A: 헝가리안 매칭으로 GT 하나에 예측 하나만 대응시키기 때문.
+
+- **Q:** 여러 줄 답?
+- **A:** 첫 줄
+  둘째 줄
+
+Q: 답이 없는 질문
+
+Q: 코드 포함
+A: 아래처럼 쓴다
+```python
+# Q: 이건 카드가 아니다
+x = 1
+```
+
+## 다음 섹션
+Q: 중복 질문
+A: 첫 답
+Q: 중복 질문
+A: 나중 답
+"""
+        cards = dict(notes.parse_cards(text))
+        self.assertEqual(list(cards), ["DETR에 NMS가 필요 없는 이유는?", "여러 줄 답?", "코드 포함", "중복 질문"])
+        self.assertEqual(cards["여러 줄 답?"], "첫 줄\n둘째 줄")
+        self.assertIn("x = 1", cards["코드 포함"])
+        self.assertEqual(cards["중복 질문"], "나중 답")
+        self.assertEqual(notes.parse_cards("그냥 글"), [])
+
+
+class LibraryTest(TempHome):
+    def test_add_dedupes_by_arxiv_id(self):
+        first = self.paper()
+        self.assertEqual((first["slug"], first["arxiv_id"]), ("2111.14330", "2111.14330"))
+        self.assertEqual(first["pdf_url"], "https://arxiv.org/pdf/2111.14330")
+        again, created = db.add_paper({"title": "same paper, other link", "url": "https://arxiv.org/pdf/2111.14330"})
+        self.assertFalse(created)
+        self.assertEqual(again["id"], first["id"])
+        manual, created = db.add_paper({"title": "  A   book chapter ", "tags": "math, , math,linear algebra"})
+        self.assertTrue(created)
+        self.assertEqual((manual["slug"], manual["title"]), (f"local-{manual['id']}", "A book chapter"))
+        self.assertEqual(manual["tags"], "math, linear algebra")
+        with self.assertRaises(ValueError):
+            db.add_paper({"title": "   "})
+
+    def test_status_change_is_logged_and_dated(self):
+        p = self.paper()
+        done = db.update_paper(p["id"], {"status": "done"})
+        self.assertEqual(done["finished_at"], date.today().isoformat())
+        self.assertIsNone(db.update_paper(p["id"], {"status": "reading"})["finished_at"])
+        with self.assertRaises(ValueError):
+            db.update_paper(p["id"], {"status": "finished"})
+        self.assertIsNone(db.update_paper(999, {"status": "done"}))
+        s = db.stats()
+        self.assertEqual(s["by_status"], {"to_read": 0, "reading": 1, "done": 0})
+        self.assertEqual(s["streak"], 1)
+        self.assertEqual([a["kind"] for a in s["recent"]], ["status", "status", "added"])
+
+    def test_find_paper(self):
+        p = self.paper()
+        for ref in (str(p["id"]), "2111.14330", "https://arxiv.org/abs/2111.14330v3"):
+            self.assertEqual(db.find_paper(ref)["id"], p["id"], ref)
+        self.assertIsNone(db.find_paper("nope"))
+
+    def test_cards_keep_progress_across_note_edits(self):
+        p = self.paper()
+        today = date(2026, 10, 7)
+        db.sync_cards(p["id"], [("q1", "a1"), ("q2", "a2")], today)
+        q1 = next(c for c in db.due_cards(today) if c["question"] == "q1")
+        self.assertEqual(db.grade_card(q1["id"], "good", today)["box"], 1)
+        db.sync_cards(p["id"], [("q1", "a1 reworded"), ("q3", "a3")], today)
+        cards = {c["question"]: c for c in db.cards_for(p["id"])}
+        self.assertEqual(set(cards), {"q1", "q3"})
+        self.assertEqual((cards["q1"]["box"], cards["q1"]["answer"]), (1, "a1 reworded"))
+        self.assertEqual([c["question"] for c in db.due_cards(today)], ["q3"])
+        self.assertEqual(len(db.due_cards(today + timedelta(days=3))), 2)
+        db.delete_paper(p["id"])
+        self.assertEqual(db.due_cards(today + timedelta(days=99)), [])
+
+    def test_heatmap_window_starts_on_sunday(self):
+        for offset in range(7):
+            today = date(2026, 10, 4) + timedelta(days=offset)
+            window = db.stats(today, weeks=20)["heatmap"]
+            start = date.fromisoformat(window["start"])
+            self.assertEqual(start.weekday(), 6, today)
+            self.assertEqual((today - start).days // 7, 19)
+
+
+class MigrationTest(TempHome):
+    def test_v01_database_is_upgraded_in_place(self):
+        config.DB_PATH.unlink()
+        conn = sqlite3.connect(config.DB_PATH)
+        conn.executescript("""
+            CREATE TABLE papers (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, authors TEXT DEFAULT '',
+                year INTEGER, url TEXT DEFAULT '', tags TEXT DEFAULT '', status TEXT DEFAULT 'to_read',
+                summary TEXT DEFAULT '', created_at TEXT DEFAULT (datetime('now', 'localtime')));
+            INSERT INTO papers (title, url, summary, status) VALUES
+                ('Sparse DETR', 'http://arxiv.org/abs/2111.14330v2', 'DETR is the first', 'reading'),
+                ('Sparse DETR dup', 'http://arxiv.org/abs/2111.14330v1', '', 'to_read'),
+                ('Blog post', 'https://example.com/post', '', 'done');
+        """)
+        conn.commit()
+        conn.close()
+        config.NOTES_DIR.mkdir()
+        (config.NOTES_DIR / "1.md").write_text("# old note\nQ: q\nA: a\n", encoding="utf-8")
+
+        db.init()
+        db.init()  # idempotent
+        notes.migrate_legacy_names()
+
+        papers = {p["id"]: p for p in db.list_papers()}
+        self.assertEqual([papers[i]["slug"] for i in (1, 2, 3)], ["2111.14330", "local-2", "local-3"])
+        self.assertEqual((papers[1]["abstract"], papers[1]["status"]), ("DETR is the first", "reading"))
+        self.assertIsNone(papers[2]["arxiv_id"])
+        self.assertEqual((papers[1]["url"], papers[1]["pdf_url"]),
+                         ("https://arxiv.org/abs/2111.14330", "https://arxiv.org/pdf/2111.14330"))
+        self.assertEqual(papers[3]["url"], "https://example.com/post")
+        self.assertTrue((config.NOTES_DIR / "2111.14330.md").exists())
+        self.assertFalse((config.NOTES_DIR / "1.md").exists())
+        self.assertEqual(len(notes.sync_all()), 3)
+        self.assertEqual([c["question"] for c in db.cards_for(1)], ["q"])
+
+
+class NotesTest(TempHome):
+    def test_write_read_and_conflict(self):
+        p = self.paper(status="reading")
+        p = db.update_paper(p["id"], {"note_requested": True})
+        self.assertFalse(notes.read(p)["exists"])
+        saved = notes.write(p, "# n\nQ: one\nA: 1\n", None)
+        self.assertTrue(saved["exists"])
+        self.assertEqual(saved["path"], "notes/2111.14330.md")
+        p = db.get_paper(p["id"])
+        self.assertEqual(p["note_requested"], 0, "a written note clears the request")
+        self.assertEqual(len(db.cards_for(p["id"])), 1)
+
+        with self.assertRaises(notes.Conflict):
+            notes.write(p, "stale editor", None)
+        with self.assertRaises(notes.Conflict):
+            notes.write(p, "stale editor", saved["mtime"] - 5)
+        self.assertEqual(notes.read(p)["content"], "# n\nQ: one\nA: 1\n")
+        notes.write(p, "# n\n", saved["mtime"])
+        self.assertEqual(db.cards_for(p["id"]), [])
+
+    def test_external_edit_is_picked_up_once(self):
+        p = self.paper()
+        config.NOTES_DIR.mkdir(exist_ok=True)
+        notes.note_path(p["slug"]).write_text("Q: from claude code\nA: yes\n", encoding="utf-8")
+        self.assertTrue(notes.sync(db.get_paper(p["id"])))
+        self.assertFalse(notes.sync(db.get_paper(p["id"])))
+        self.assertEqual(len(db.cards_for(p["id"])), 1)
+        kinds = [a["kind"] for a in db.stats()["recent"]]
+        self.assertEqual(kinds.count("note"), 1)
+        notes.note_path(p["slug"]).unlink()
+        notes.sync(db.get_paper(p["id"]))
+        self.assertEqual(db.cards_for(p["id"]), [])
+        self.assertIsNone(db.get_paper(p["id"])["note_mtime"])
+
+    def test_note_names_cannot_escape_the_notes_dir(self):
+        for bad in ("../secret", "a/b", "", ".hidden", "_TEMPLATE", "x" * 200):
+            with self.assertRaises(ValueError, msg=bad):
+                notes.note_path(bad)
+        self.assertIsNone(notes.read_survey("../papers"))
+
+
+class ExportTest(TempHome):
+    def test_bibtex(self):
+        p = self.paper(title="The {Sparse} DETR: Efficient Detection", authors="Byungseok Roh, José Álvarez")
+        self.assertEqual(exporter.bib_key(p), "roh2021sparse")
+        bib = exporter.bibtex(p)
+        self.assertIn("author = {Byungseok Roh and José Álvarez}", bib)
+        self.assertIn("title = {{The Sparse DETR: Efficient Detection}}", bib)
+        self.assertIn("eprint = {2111.14330}", bib)
+        self.assertIn("primaryClass = {cs.CV}", bib)
+        self.assertEqual(exporter.bib_key({"title": "", "authors": ""}), "anon")
+
+    def test_backup_roundtrip(self):
+        p = self.paper(tags="detr")
+        notes.write(p, "# my note\n", None)
+        db.add_paper({"title": "Manual entry"})
+        backup = exporter.export_all()
+
+        self.tearDown()
+        self.setUp()
+        self.assertEqual(exporter.import_all(backup), {"added": 2, "skipped": 0, "notes_written": 1})
+        self.assertEqual(exporter.import_all(backup), {"added": 0, "skipped": 2, "notes_written": 0},
+                         "importing the same backup twice adds nothing")
+        restored = db.find_paper("2111.14330")
+        self.assertEqual((restored["tags"], notes.read(restored)["content"]), ("detr", "# my note\n"))
+        with self.assertRaises(ValueError):
+            exporter.import_all({"something": "else"})
+
+
+if __name__ == "__main__":
+    unittest.main()
