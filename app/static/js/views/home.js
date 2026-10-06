@@ -1,4 +1,4 @@
-import { api, esc, STATUS } from "../util.js";
+import { api, esc, toast, copy, STATUS } from "../util.js";
 
 const DAY = ["일", "월", "화", "수", "목", "금", "토"];
 const pad = (n) => String(n).padStart(2, "0");
@@ -28,6 +28,67 @@ function heatmap({ start, end, days }) {
     </div></div>
     <div class="heat-legend" aria-hidden="true">적음 ${[0, 1, 2, 3, 4].map((l) => `<div class="heat-cell" data-level="${l}"></div>`).join("")} 많음
       <span style="margin-left:10px">하루 활동 수: 1 · 2–3 · 4–6 · 7 이상</span></div>`;
+}
+
+const md = (s) => { const d = parse(s); return `${d.getMonth() + 1}/${d.getDate()}`; };
+
+/** This week against the one before it, with arrows to look further back. */
+function weeklyCard(box) {
+  let offset = 0;
+  let week = null;
+
+  const summary = () => {
+    const c = week.current;
+    const acc = c.accuracy === null ? "" : ` (정답률 ${Math.round(c.accuracy * 100)}%)`;
+    const list = (title, items) => (items.length ? `\n### ${title}\n${items.map((p) => `- ${p.title}`).join("\n")}\n` : "");
+    return `## 주간 회고 (${md(week.start)} – ${md(week.end)})\n\n- 공부한 날: ${c.active_days}일\n- 완독: ${c.finished}편\n- 노트 쓴 논문: ${c.notes}편\n- 복습한 카드: ${c.reviews}장${acc}\n${list("완독한 논문", week.finished)}${list("노트를 쓴 논문", week.noted)}`;
+  };
+
+  const draw = () => {
+    const c = week.current;
+    const p = week.previous;
+    const diff = (a, b, unit) => (a === b ? "전주와 같음" : `전주보다 ${a > b ? "+" : "−"}${Math.abs(a - b)}${unit}`);
+    const pct = (x) => Math.round(x * 100);
+    const accuracyNote = c.accuracy === null ? "복습 기록 없음" : p.accuracy === null ? "전주 기록 없음" : diff(pct(c.accuracy), pct(p.accuracy), "%p");
+    const stats = [
+      ["공부한 날", c.active_days, "일", diff(c.active_days, p.active_days, "일")],
+      ["완독", c.finished, "편", diff(c.finished, p.finished, "편")],
+      ["노트 쓴 논문", c.notes, "편", diff(c.notes, p.notes, "편")],
+      ["복습한 카드", c.reviews, "장", diff(c.reviews, p.reviews, "장")],
+      ["복습 정답률", c.accuracy === null ? "–" : pct(c.accuracy), c.accuracy === null ? "" : "%", accuracyNote],
+    ];
+    const todayKey = iso(new Date());
+    const title = offset === 0 ? "이번 주" : offset === -1 ? "지난주" : `${-offset}주 전`;
+    const links = (items) => items.map((x) => `<li><a href="#/paper/${x.id}">${esc(x.title)}</a></li>`).join("");
+    const quiet = !c.active_days && !c.finished;
+    box.innerHTML = `
+      <div class="card-head"><div><h2>${title}</h2><span class="small muted">${md(week.start)} – ${md(week.end)} · 월요일 시작</span></div>
+        <div class="row"><button class="btn sm" id="week-copy" ${quiet ? "disabled" : ""}>회고 복사</button>
+          <button class="btn sm" id="week-prev" aria-label="이전 주">‹</button>
+          <button class="btn sm" id="week-next" aria-label="다음 주" ${offset === 0 ? "disabled" : ""}>›</button></div></div>
+      <div class="week-stats">${stats.map(([label, value, unit, note]) => `<div><div class="label">${label}</div>
+        <div class="value">${value}<small>${unit}</small></div><div class="delta">${note}</div></div>`).join("")}</div>
+      <div class="week-strip">${week.days.map((d, i) => `<div class="week-day${d.day > todayKey ? " future" : ""}">
+        <div class="heat-cell" data-level="${d.day > todayKey ? 0 : level(d.count)}" role="img" aria-label="${DAY[(i + 1) % 7]}요일 활동 ${d.count}건"></div>
+        ${DAY[(i + 1) % 7]} <b>${d.day > todayKey ? "" : d.count || ""}</b></div>`).join("")}</div>
+      ${week.finished.length || week.noted.length ? `<div class="week-lists">
+        ${week.finished.length ? `<div><h3>완독한 논문</h3><ul>${links(week.finished)}</ul></div>` : ""}
+        ${week.noted.length ? `<div><h3>노트를 쓴 논문</h3><ul>${links(week.noted)}</ul></div>` : ""}</div>` : ""}
+      ${quiet ? `<p class="muted small" style="margin-top:12px">이 주에는 기록이 없어요.</p>` : ""}`;
+  };
+
+  const load = async () => {
+    const data = await api(`/api/weekly?offset=${offset}`);
+    if (!box.isConnected) return;
+    week = data;
+    draw();
+  };
+  box.addEventListener("click", async (e) => {
+    if (e.target.id === "week-prev") { offset -= 1; load(); }
+    else if (e.target.id === "week-next" && offset < 0) { offset += 1; load(); }
+    else if (e.target.id === "week-copy") toast((await copy(summary())) ? "회고를 마크다운으로 복사했어요." : "복사하지 못했어요.");
+  });
+  return load();
 }
 
 function activityText(a) {
@@ -71,7 +132,16 @@ export async function render(root) {
   for (const p of requested.slice(0, 3)) {
     todos.push(`<div class="todo"><div class="grow"><div>${esc(p.title)}</div><div class="small muted">Claude Code에 노트를 요청해둔 논문</div></div><a class="btn sm" href="#/paper/${p.id}">열기</a></div>`);
   }
-  if (!reading.length && next) {
+  // 읽는 중인 논문이 없으면, 진행 중인 로드맵 트랙에서 다음 차례를 권한다
+  const upNext = tracks
+    .filter((t) => t.papers.some((p) => p.paper_id))
+    .map((t) => ({ track: t, paper: t.papers.find((p) => p.status !== "done") }))
+    .find((x) => x.paper);
+  if (!reading.length && upNext) {
+    const { track, paper } = upNext;
+    todos.push(`<div class="todo"><div class="grow"><div>${esc(paper.title)}</div><div class="small muted">'${esc(track.name)}' 트랙의 다음 논문</div></div>
+      <a class="btn sm" href="${paper.paper_id ? `#/paper/${paper.paper_id}` : "#/roadmap"}">${paper.paper_id ? "읽기 시작" : "로드맵에서 추가"}</a></div>`);
+  } else if (!reading.length && next) {
     todos.push(`<div class="todo"><div class="grow"><div>${esc(next.title)}</div><div class="small muted">읽을 예정 목록에서 가장 오래된 논문</div></div><a class="btn sm" href="#/paper/${next.id}">읽기 시작</a></div>`);
   }
 
@@ -99,6 +169,7 @@ export async function render(root) {
         <div class="tile"><div class="label">노트</div><div class="value">${stats.notes}<small>개</small></div><div class="sub">논문 ${stats.total}편 중</div></div>
         <div class="tile"><div class="label">복습 대기</div><div class="value">${stats.cards_due}<small>장</small></div><div class="sub">전체 카드 ${stats.cards_total}장</div></div>
       </div>
+      <div class="card" id="weekly" style="margin-top:12px"></div>
       <div class="two-col" style="margin-top:12px">
         <div class="card"><div class="card-head"><h2>학습 기록</h2><span class="small muted">최근 20주</span></div>${heatmap(stats.heatmap)}</div>
         <div class="card"><div class="card-head"><h2>오늘 할 일</h2></div>
@@ -111,6 +182,8 @@ export async function render(root) {
           <div class="stack">${trackRows || `<p class="muted">아직 시작한 트랙이 없어요. <a href="#/roadmap">로드맵</a>에서 트랙을 골라 추가해보세요.</p>`}</div></div>
       </div>
     </div>`;
+
+  await weeklyCard(root.querySelector("#weekly"));
 
   const tip = document.createElement("div");
   tip.className = "tooltip hidden";
