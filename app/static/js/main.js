@@ -6,12 +6,14 @@ import * as paper from "./views/paper.js";
 import * as review from "./views/review.js";
 import * as roadmap from "./views/roadmap.js";
 import * as surveys from "./views/surveys.js";
+import * as map from "./views/map.js";
 
 const ROUTES = [
   [/^\/?$/, "home", home],
   [/^\/search$/, "search", search],
   [/^\/library$/, "library", library],
   [/^\/paper\/(\d+)$/, "library", paper],
+  [/^\/map$/, "library", map],
   [/^\/review$/, "review", review],
   [/^\/roadmap$/, "roadmap", roadmap],
   [/^\/surveys$/, "surveys", surveys],
