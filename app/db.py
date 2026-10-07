@@ -470,6 +470,7 @@ def weekly(today: date | None = None, offset: int = 0) -> dict:
         targets = goals()
         return {
             "start": a, "end": b, "offset": offset, "is_current": offset == 0,
+            "goal_streak": goal_streak(today),
             "goals": {**targets,
                       "days_met": bool(targets["goal_days"]) and current["active_days"] >= targets["goal_days"],
                       "papers_met": bool(targets["goal_papers"]) and current["finished"] >= targets["goal_papers"]},
@@ -479,3 +480,35 @@ def weekly(today: date | None = None, offset: int = 0) -> dict:
                       "count": days.get((start + timedelta(days=i)).isoformat(), 0)} for i in range(7)],
             "finished": finished, "noted": noted,
         }
+
+
+def goal_streak(today: date | None = None, max_weeks: int = 260) -> int:
+    """Consecutive weeks that met every enabled goal, counting back from last week.
+
+    The current week is added once it has already met them. Today's goals are applied to past weeks too.
+    """
+    today = today or date.today()
+    targets = goals()
+    if not targets["goal_days"] and not targets["goal_papers"]:
+        return 0
+    monday = lambda d: d - timedelta(days=d.weekday())
+    days_by_week: dict[date, set[str]] = {}
+    done_by_week: dict[date, int] = {}
+    with connect() as conn:
+        for r in conn.execute("SELECT DISTINCT day FROM activity"):
+            days_by_week.setdefault(monday(date.fromisoformat(r["day"])), set()).add(r["day"])
+        for r in conn.execute("SELECT finished_at FROM papers WHERE status='done' AND finished_at IS NOT NULL"):
+            week = monday(date.fromisoformat(r["finished_at"]))
+            done_by_week[week] = done_by_week.get(week, 0) + 1
+
+    def met(week: date) -> bool:
+        return (len(days_by_week.get(week, ())) >= targets["goal_days"]
+                and done_by_week.get(week, 0) >= targets["goal_papers"])
+
+    this_week = monday(today)
+    count = 1 if met(this_week) else 0
+    week = this_week - timedelta(weeks=1)
+    while met(week) and count < max_weeks:
+        count += 1
+        week -= timedelta(weeks=1)
+    return count
