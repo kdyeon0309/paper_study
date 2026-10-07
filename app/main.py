@@ -66,6 +66,15 @@ class CardEdit(BaseModel):
     answer: str = Field(min_length=1, max_length=5000)
 
 
+class TimerAction(BaseModel):
+    action: Literal["start", "ping", "stop"]
+
+
+class Recall(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
+    grade: Literal["good", "hazy"]
+
+
 class Goals(BaseModel):
     goal_days: int = Field(ge=0, le=7)
     goal_papers: int = Field(ge=0, le=50)
@@ -249,6 +258,8 @@ def papers_get(paper_id: int):
         "paper": _decorate(paper),
         "tracks": _tracks_of(paper),
         "links": notes.links(paper),
+        "timer": db.timer_state(paper_id),
+        "recalls": db.recalls_for(paper_id),
         "note": notes.read(paper),
         "cards": db.cards_for(paper_id),
         "bibtex": exporter.bibtex(paper),
@@ -336,6 +347,31 @@ def cards_delete(card_id: int):
     return _rewrite_card(card_id, None, None)
 
 
+@app.post("/api/papers/{paper_id}/timer")
+def paper_timer(paper_id: int, body: TimerAction):
+    _paper_or_404(paper_id)
+    return db.timer(paper_id, body.action)
+
+
+@app.get("/api/recall/due")
+def recall_due():
+    return [{k: p[k] for k in ("id", "title", "finished_at")} for p in db.due_recalls()]
+
+
+@app.get("/api/recall/{paper_id}/reference")
+def recall_reference(paper_id: int):
+    """What to compare a from-memory summary against: the note's own summary line, else the abstract."""
+    paper = _paper_or_404(paper_id)
+    summary = notes.summary_line(paper)
+    return {"text": summary or paper["abstract"], "source": "note" if summary else "abstract"}
+
+
+@app.post("/api/recall/{paper_id}")
+def recall_record(paper_id: int, body: Recall):
+    _paper_or_404(paper_id)
+    return db.record_recall(paper_id, body.text, body.grade)
+
+
 @app.get("/api/goals")
 def goals_get():
     return db.goals()
@@ -381,6 +417,7 @@ def stats():
     result = db.stats()
     result["notes"] = sum(p["note_mtime"] is not None for p in papers)
     result["note_requests"] = sum(bool(p["note_requested"]) for p in papers)
+    result["recalls_due"] = len(db.due_recalls())
     return result
 
 
@@ -454,6 +491,14 @@ def roadmaps_remove_paper(key: str, arxiv_id: str):
 @app.get("/api/surveys")
 def surveys_list():
     return notes.list_surveys()
+
+
+@app.get("/api/surveys/{name}/links")
+def surveys_links(name: str):
+    found = notes.survey_links(name)
+    if found is None:
+        raise HTTPException(404, "서베이를 찾을 수 없어요.")
+    return found
 
 
 @app.get("/api/surveys/{name}", response_class=PlainTextResponse)
