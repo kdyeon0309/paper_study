@@ -102,6 +102,25 @@ export async function refreshDueBadge() {
   } catch { /* 배지는 없어도 된다 */ }
 }
 
+/**
+ * Ask, one saved search at a time, how many papers appeared since it was last viewed.
+ * arXiv asks for about 3 seconds between requests, so we pause after any answer that did not come from the cache.
+ */
+export async function checkSavedSearches(searches, onResult, stopped = () => false) {
+  for (const item of searches) {
+    if (stopped()) return;
+    let result;
+    try {
+      result = await api(`/api/searches/${item.id}/new`);
+    } catch {
+      return;  // arXiv가 막혔으면 조용히 그만둔다
+    }
+    if (stopped()) return;
+    onResult(item, result);
+    if (!result.cached) await new Promise((r) => setTimeout(r, 3000));
+  }
+}
+
 /* ---------- markdown + math ---------- */
 
 let purifyReady = false;
@@ -139,7 +158,8 @@ export function renderMarkdown(source, { wiki = {} } = {}) {
     .split(CODE)
     .map((part, i) => (i % 2 ? part : part
       // [[arXiv ID 또는 제목]] 은 라이브러리에 있는 논문이면 그 논문으로 가는 링크가 된다
-      .replace(/\[\[([^\[\]\n]{1,200})\]\]/g, (whole, inner) => (wiki[inner] ? `[${inner}](#/paper/${wiki[inner]})` : whole))
+      .replace(/\[\[([^\[\]\n]{1,200})\]\]/g, (whole, inner) => (wiki[inner]
+        ? `[${wiki[inner].title.replace(/[\[\]]/g, "")}](#/paper/${wiki[inner].id})` : whole))
       .replace(MATH, (_, block, bracket, inline) => {
       const tex = block ?? bracket ?? inline;
       math.push({ tex: tex.trim(), display: inline === undefined });
@@ -152,17 +172,19 @@ export function renderMarkdown(source, { wiki = {} } = {}) {
 
 /* ---------- 복습 카드 편집 폼 (논문 화면과 복습 화면이 같이 쓴다) ---------- */
 
-export function cardForm(card) {
-  return `<form class="card-edit stack" data-card="${card.id}" style="gap:8px">
+/** `card.id` 가 "new" 이면 새 카드 폼이고, 그때는 `paperId` 가 필요하다. */
+export function cardForm(card, paperId = "") {
+  return `<form class="card-edit stack" data-card="${card.id}" data-paper="${paperId}" style="gap:8px">
     <label class="field"><span>질문</span><input class="input" name="question" value="${esc(card.question)}" required maxlength="500"></label>
     <label class="field"><span>답</span><textarea class="textarea" name="answer" rows="3" required maxlength="5000">${esc(card.answer)}</textarea></label>
     <div class="row"><button class="btn sm primary" type="submit">저장</button>
       <button class="btn sm" type="button" data-card-cancel>취소</button>
-      <span class="small muted">노트 파일의 Q/A 줄이 함께 바뀌고, 복습 진도는 유지돼요.</span></div></form>`;
+      <span class="small muted">${card.id === "new" ? "노트의 '복습 카드' 섹션에 Q/A 줄로 추가돼요." : "노트 파일의 Q/A 줄이 함께 바뀌고, 복습 진도는 유지돼요."}</span></div></form>`;
 }
 
 export async function submitCardForm(form) {
   const body = Object.fromEntries(new FormData(form));
+  if (form.dataset.card === "new") return api(`/api/papers/${form.dataset.paper}/cards`, { method: "POST", body });
   return api(`/api/cards/${form.dataset.card}`, { method: "PATCH", body });
 }
 

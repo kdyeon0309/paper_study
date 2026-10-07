@@ -28,6 +28,7 @@ export async function render(root) {
     <div class="page">
       <div class="page-head"><div><h1>라이브러리</h1><p id="lib-sub"></p></div>
         <div class="head-actions">
+          <a class="btn" href="#/map">연결 지도</a>
           <button class="btn" id="add-btn">직접 추가</button>
           <a class="btn" href="/api/export.bib" download>BibTeX</a>
           <a class="btn" href="/api/export.json" download>백업</a>
