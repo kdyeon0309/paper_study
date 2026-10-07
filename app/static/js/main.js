@@ -7,6 +7,7 @@ import * as review from "./views/review.js";
 import * as roadmap from "./views/roadmap.js";
 import * as surveys from "./views/surveys.js";
 import * as map from "./views/map.js";
+import * as settings from "./views/settings.js";
 
 const ROUTES = [
   [/^\/?$/, "home", home],
@@ -14,12 +15,14 @@ const ROUTES = [
   [/^\/library$/, "library", library],
   [/^\/paper\/(\d+)$/, "library", paper],
   [/^\/map$/, "library", map],
+  [/^\/settings$/, "settings", settings],
   [/^\/review$/, "review", review],
   [/^\/roadmap$/, "roadmap", roadmap],
   [/^\/surveys$/, "surveys", surveys],
   [/^\/surveys\/([\w.-]+)$/, "surveys", surveys],
 ];
 
+const TITLES = { home: "홈", search: "검색", library: "라이브러리", review: "복습", roadmap: "로드맵", surveys: "서베이", settings: "설정" };
 const view = $("#view");
 let cleanup = null;
 let renderToken = 0;
@@ -40,6 +43,9 @@ async function route() {
   $$("#nav a[aria-current]").forEach((a) => a.setAttribute("aria-current", "page"));
   view.innerHTML = `<div class="page"><div class="skeleton">불러오는 중…</div></div>`;
   window.scrollTo(0, 0);
+  document.title = `${TITLES[name]} · Paper Study`;
+  // 화면이 바뀌면 키보드와 화면 낭독기의 위치를 본문 처음으로 옮긴다 (입력창이 있는 화면은 스스로 다시 옮긴다)
+  view.focus({ preventScroll: true });
   try {
     const result = await mod.render(view, { args: m.slice(1), query: new URLSearchParams(queryString), alive: () => token === renderToken });
     if (token === renderToken) cleanup = result;
@@ -53,21 +59,30 @@ async function route() {
 
 window.addEventListener("hashchange", route);
 
+const GO = { h: "#/", s: "#/search", l: "#/library", r: "#/review", m: "#/roadmap", v: "#/surveys", c: "#/map" };
+let goUntil = 0;  // g 를 누른 뒤 이 시각까지 다음 키를 기다린다
+
 document.addEventListener("keydown", (e) => {
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) || e.target.isContentEditable;
-  if (e.key === "/" && !typing && !e.metaKey && !e.ctrlKey && !$("dialog[open]")) {
+  if (typing || e.metaKey || e.ctrlKey || e.altKey || $("dialog[open]")) return;
+  if (e.key === "/") {
     e.preventDefault();
     if (location.hash === "#/search") $("#search-input")?.focus();
     else location.hash = "#/search";
+  } else if (e.key === "?") {
+    e.preventDefault();
+    $("#shortcut-list").innerHTML = settings.shortcutTable();
+    $("#shortcut-dialog").showModal();
+  } else if (e.key === "g") {
+    goUntil = Date.now() + 1200;
+  } else if (Date.now() < goUntil && GO[e.key]) {
+    e.preventDefault();
+    goUntil = 0;
+    location.hash = GO[e.key];
   }
 });
-
-$("#theme-btn").addEventListener("click", () => {
-  const root = document.documentElement;
-  const dark = root.dataset.theme ? root.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
-  root.dataset.theme = dark ? "light" : "dark";
-  try { localStorage.setItem("ps.theme", root.dataset.theme); } catch { /* 테마 기억은 선택 사항 */ }
-});
+$("#shortcut-close").addEventListener("click", () => $("#shortcut-dialog").close());
+$("#skip-link").addEventListener("click", () => view.focus());
 
 route();
 refreshDueBadge();

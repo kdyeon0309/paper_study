@@ -16,6 +16,7 @@
   <script defer src="/static/vendor/katex/katex.min.js"></script>
 </head>
 <body>
+  <button class="skip" id="skip-link" type="button">본문으로 건너뛰기</button>
   <div class="shell">
     <aside class="sidebar">
       <a class="brand" href="#/"><span class="brand-mark">P</span>Paper Study</a>
@@ -34,13 +35,18 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 13h7M9 17h5"/></svg>서베이</a>
       </nav>
       <div class="sidebar-foot">
-        <button class="btn ghost sm" id="theme-btn" type="button">테마 바꾸기</button>
-        <span class="small"><kbd>/</kbd> 검색으로 이동</span>
+        <a class="btn ghost sm" href="#/settings">설정</a>
+        <span class="small"><kbd>?</kbd> 단축키 보기</span>
       </div>
     </aside>
     <main class="main" id="view" tabindex="-1"></main>
   </div>
   <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+  <dialog id="shortcut-dialog" aria-labelledby="shortcut-title">
+    <h2 id="shortcut-title">단축키</h2>
+    <div id="shortcut-list"></div>
+    <div class="dialog-actions"><button class="btn" type="button" id="shortcut-close">닫기</button></div>
+  </dialog>
   <dialog id="confirm-dialog">
     <h2 id="confirm-title"></h2>
     <p class="muted" id="confirm-text"></p>

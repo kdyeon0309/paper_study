@@ -437,3 +437,9 @@ a.tab:hover { text-decoration: none; }
 .map-legend svg { vertical-align: -3px; margin-right: 5px; }
 .map-svg.dense .map-node text { display: none; }
 .map-svg.dense.focusing .map-node.near text { display: block; }
+
+/* ---------- skip link, focus ---------- */
+.skip { position: fixed; top: 8px; left: 8px; z-index: 100; padding: 8px 14px; border-radius: 8px; border: none; background: var(--accent); color: var(--on-accent); font-weight: 600; transform: translateY(-200%); }
+.skip:focus { transform: none; }
+#view:focus { outline: none; }
+input[type="radio"] { accent-color: var(--accent); }
