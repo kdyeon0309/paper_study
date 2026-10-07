@@ -310,6 +310,22 @@ def _rewrite_card(card_id: int, question: str | None, answer: str | None) -> dic
     return {"cards": db.cards_for(paper["id"]), "card": db.get_card(card_id)}
 
 
+@app.post("/api/papers/{paper_id}/cards")
+def cards_create(paper_id: int, body: CardEdit):
+    """Add a card without opening the editor: it is appended to the note's 복습 카드 section."""
+    paper = _paper_or_404(paper_id)
+    question, answer = notes.clean_card(body.question, body.answer)
+    note = notes.read(paper)
+    notes.write(paper, notes.append_card(note["content"], question, answer, paper["title"]), note["mtime"])
+    return {"cards": db.cards_for(paper_id)}
+
+
+@app.get("/api/graph")
+def graph():
+    notes.sync_all()
+    return notes.graph()
+
+
 @app.patch("/api/cards/{card_id}")
 def cards_edit(card_id: int, body: CardEdit):
     return _rewrite_card(card_id, *notes.clean_card(body.question, body.answer))
