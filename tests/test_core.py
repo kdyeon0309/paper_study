@@ -431,6 +431,25 @@ A: 첫 답
         with self.assertRaises(KeyError):
             notes.replace_card(self.NOTE, "없는 질문", "x", "y")
 
+    def test_append_card(self):
+        fresh = notes.append_card("", "q1", "a1", "논문 제목")
+        self.assertEqual(fresh, "# 논문 제목\n\n## 복습 카드\nQ: q1\nA: a1\n")
+        no_section = notes.append_card("# n\n본문\n\n\n", "q1", "a1", "t")
+        self.assertEqual(no_section, "# n\n본문\n\n## 복습 카드\nQ: q1\nA: a1\n")
+
+        added = notes.append_card(self.NOTE, "새 질문", "새 답\n둘째 줄", "t")
+        self.assertEqual([q for q, _ in notes.parse_cards(added)], ["첫 질문", "둘째 질문", "새 질문"])
+        lines = added.splitlines()
+        self.assertLess(lines.index("Q: 새 질문"), lines.index("## 끝"), "goes inside the 복습 카드 section")
+        self.assertEqual(lines[lines.index("Q: 새 질문") - 1], "")
+        self.assertEqual(lines[lines.index("## 끝") - 1], "")
+        self.assertTrue(added.endswith("마지막 줄\n"))
+
+        empty_section = notes.append_card("# n\n## 복습 카드\n\n## 다음\n끝\n", "q", "a", "t")
+        self.assertEqual(empty_section, "# n\n## 복습 카드\nQ: q\nA: a\n\n## 다음\n끝\n")
+        with self.assertRaises(ValueError):
+            notes.append_card(self.NOTE, "첫 질문", "x", "t")
+
     def test_clean_card(self):
         self.assertEqual(notes.clean_card("  여러   공백  ", "\n답\n\n둘째  \n"), ("여러 공백", "답\n둘째"))
         for question, answer in (("", "답"), ("질문", "  "), ("질문", "답\nQ: 끼어든 질문"), ("질문", "# 제목")):
@@ -471,10 +490,18 @@ class LinkTest(TempHome):
 
         got = notes.links(db.get_paper(detr["id"]))
         self.assertEqual([x["id"] for x in got["out"]], [vit["id"], book["id"]])
-        self.assertEqual(got["wiki"], {"2010.11929": vit["id"], "linear algebra done right": book["id"], "2111.14330": detr["id"]})
+        self.assertEqual(got["wiki"], {"2010.11929": {"id": vit["id"], "title": "An Image is Worth 16x16 Words"},
+                                       "linear algebra done right": {"id": book["id"], "title": "Linear Algebra Done Right"},
+                                       "2111.14330": {"id": detr["id"], "title": "Sparse DETR"}})
         self.assertEqual([x["id"] for x in got["back"]], [vit["id"]])
         self.assertEqual([x["id"] for x in notes.links(db.get_paper(vit["id"]))["back"]], [detr["id"]])
         self.assertEqual(notes.links(db.get_paper(lonely["id"])), {"wiki": {}, "out": [], "back": []})
+
+        g = notes.graph()
+        self.assertEqual({n["id"] for n in g["nodes"]}, {detr["id"], vit["id"], book["id"]})
+        self.assertEqual({(e["from"], e["to"]) for e in g["edges"]},
+                         {(detr["id"], vit["id"]), (detr["id"], book["id"]), (vit["id"], detr["id"])})
+        self.assertEqual(g["isolated"], 1)
 
 
 class GoalTest(TempHome):
@@ -492,6 +519,33 @@ class GoalTest(TempHome):
         self.assertEqual(week["goals"], {"goal_days": 2, "goal_papers": 0, "days_met": True, "papers_met": False},
                          "a goal of zero is switched off, not automatically met")
         self.assertFalse(db.weekly(date(2026, 10, 7), offset=-1)["goals"]["days_met"])
+
+    def test_goal_streak(self):
+        today = date(2026, 10, 7)  # 수요일. 이번 주 월요일은 10/5
+        p = self.paper()
+        db.set_goals(2, 0)
+
+        def study(*days):
+            with db.connect() as conn:
+                conn.execute("DELETE FROM activity")
+                for day in days:
+                    db.log(conn, "review", p["id"], "good", day=day)
+
+        study()
+        self.assertEqual(db.goal_streak(today), 0)
+        study("2026-09-28", "2026-09-30", "2026-09-21", "2026-09-27")           # 지난주, 지지난주 달성
+        self.assertEqual(db.goal_streak(today), 2, "an unfinished current week does not break the streak")
+        study("2026-09-28", "2026-09-30", "2026-09-21", "2026-09-27", "2026-10-05", "2026-10-06")
+        self.assertEqual(db.goal_streak(today), 3, "the current week counts once it is met")
+        study("2026-09-21", "2026-09-27", "2026-10-05", "2026-10-06")           # 지난주가 비었다
+        self.assertEqual(db.goal_streak(today), 1)
+        db.set_goals(2, 1)
+        self.assertEqual(db.goal_streak(today), 0, "every enabled goal has to be met")
+        with db.connect() as conn:
+            conn.execute("UPDATE papers SET status='done', finished_at='2026-10-06' WHERE id=?", (p["id"],))
+        self.assertEqual(db.goal_streak(today), 1)
+        db.set_goals(0, 0)
+        self.assertEqual(db.goal_streak(today), 0, "no goals, no streak")
 
     def test_saved_search_seen_marker_only_moves_forward(self):
         saved = db.save_search("detr", "cs.CV", "2026-10-01T00:00:00Z")
