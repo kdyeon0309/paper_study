@@ -139,7 +139,8 @@ function activityText(a) {
 function onboarding() {
   return `
     <div class="page">
-      <div class="page-head"><div><h1>Paper Study</h1><p>논문을 찾고, 읽고, 잊지 않게 복습하는 개인 스터디 공간이에요.</p></div></div>
+      <div class="page-head"><div><h1>Paper Study</h1><p>논문을 찾고, 읽고, 잊지 않게 복습하는 개인 스터디 공간이에요.</p></div>
+        <div class="head-actions"><a class="btn ghost sm" href="#/settings">설정</a></div></div>
       <div class="card"><div class="steps">
         <div class="step"><h3>읽을 논문 고르기</h3><p>분야별 필독 논문을 순서대로 정리한 로드맵에서 시작하거나, arXiv를 직접 검색하세요.</p>
           <div class="row"><a class="btn primary" href="#/roadmap">로드맵 보기</a><a class="btn" href="#/search">arXiv 검색</a></div></div>
@@ -201,7 +202,8 @@ export async function render(root) {
   root.innerHTML = `
     <div class="page">
       <div class="page-head"><div><h1>오늘의 공부</h1>
-        <p>${today.getMonth() + 1}월 ${today.getDate()}일 ${DAY[today.getDay()]}요일</p></div></div>
+        <p>${today.getMonth() + 1}월 ${today.getDate()}일 ${DAY[today.getDay()]}요일</p></div>
+        <div class="head-actions"><a class="btn ghost sm" href="#/settings">설정</a></div></div>
       <div class="tiles">
         <div class="tile"><div class="label">연속 학습</div><div class="value">${stats.streak}<small>일</small></div><div class="sub">지금까지 ${stats.active_days}일 공부</div></div>
         <div class="tile"><div class="label">이번 달 완독</div><div class="value">${stats.month_done}<small>편</small></div><div class="sub">전체 완독 ${stats.by_status.done}편</div></div>

@@ -17,6 +17,7 @@ export async function render(root, { args, alive }) {
   let conflict = false;
   let saveTimer = null;
 
+  document.title = `${paper.title} · Paper Study`;
   const meta = [paper.year, paper.categories, paper.comment].filter(Boolean).map(esc).join(" · ");
   root.innerHTML = `
     <div class="page wide">
