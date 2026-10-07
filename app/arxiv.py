@@ -32,6 +32,17 @@ def parse_id(text: str) -> str | None:
     return m.group(1) if m else None
 
 
+def find_ids(text: str) -> set[str]:
+    """Every arXiv id mentioned in a text. Bare numbers only count next to 'arxiv' to avoid matching decimals."""
+    found = set()
+    for m in _NEW_ID.finditer(text or ""):
+        before = text[max(0, m.start() - 24):m.start()].lower()
+        if "arxiv" in before:
+            found.add(m.group(1))
+    found.update(m.group(1) for m in _OLD_ID.finditer(text or "") if "arxiv" in text[max(0, m.start() - 24):m.start()].lower())
+    return found
+
+
 def looks_like_id(text: str) -> bool:
     """True when the whole input is an id or an arXiv link, not a keyword query."""
     text = (text or "").strip()
@@ -59,7 +70,7 @@ def _get(params: dict) -> dict:
     url = f"{API}?{urllib.parse.urlencode(params)}"
     hit = _cache.get(url)
     if hit and time.time() - hit[0] < CACHE_TTL:
-        return hit[1]
+        return {**hit[1], "cached": True}
     req = urllib.request.Request(url, headers={"User-Agent": "paper-study/0.2 (local study tool)"})
     try:
         with urllib.request.urlopen(req, timeout=20) as res:
@@ -75,7 +86,7 @@ def _get(params: dict) -> dict:
     except ET.ParseError as e:
         raise ArxivError("arXiv 응답을 해석하지 못했어요.") from e
     _cache[url] = (time.time(), result)
-    return result
+    return {**result, "cached": False}
 
 
 def parse_feed(body: bytes | str) -> dict:
@@ -98,6 +109,7 @@ def parse_feed(body: bytes | str) -> dict:
             "authors": ", ".join(a.findtext("a:name", "", NS) for a in entry.findall("a:author", NS)),
             "year": int(published[:4]) if published[:4].isdigit() else None,
             "published": published,
+            "published_at": entry.findtext("a:published", "", NS),
             "url": f"https://arxiv.org/abs/{arxiv_id}",
             "pdf_url": f"https://arxiv.org/pdf/{arxiv_id}",
             "abstract": " ".join(entry.findtext("a:summary", "", NS).split()),
@@ -111,7 +123,7 @@ def parse_feed(body: bytes | str) -> dict:
 def search(query: str, sort: str = "relevance", category: str = "", start: int = 0) -> dict:
     q = build_query(query, category)
     if not q:
-        return {"total": 0, "items": []}
+        return {"total": 0, "items": [], "cached": True}
     return _get({
         "search_query": q,
         "sortBy": "submittedDate" if sort == "recent" else "relevance",

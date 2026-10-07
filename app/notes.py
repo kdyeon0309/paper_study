@@ -3,7 +3,7 @@ import re
 from datetime import date
 from pathlib import Path
 
-from . import config, db
+from . import arxiv, config, db
 
 SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
 TEMPLATE_FILE = "_TEMPLATE.md"
@@ -29,40 +29,77 @@ def mtime_of(path: Path) -> float | None:
         return None
 
 
-def parse_cards(text: str) -> list[tuple[str, str]]:
-    """Extract `Q: ... / A: ...` pairs. Answers run until a blank line, heading, or next Q."""
-    cards, question, answer, in_fence = [], None, None, False
+def scan_cards(text: str) -> list[dict]:
+    """Find `Q: ... / A: ...` pairs with the line range each one occupies.
+
+    An answer runs until a blank line, a heading, or the next Q.
+    """
+    found, question, answer, in_fence, start, end = [], None, None, False, 0, 0
 
     def flush():
         nonlocal question, answer
         if question and answer is not None and (body := "\n".join(answer).strip()):
-            cards.append((question, body))
+            found.append({"question": question, "answer": body, "start": start, "end": end})
         question, answer = None, None
 
-    for line in text.splitlines():
+    for i, line in enumerate(text.splitlines()):
         if _FENCE.match(line.strip()):
             in_fence = not in_fence
             if answer is not None:
                 answer.append(line)
+                end = i + 1
             continue
         if in_fence:
             if answer is not None:
                 answer.append(line)
+                end = i + 1
             continue
         if m := _Q.match(line):
             flush()
-            question = m.group(1).strip()
+            question, start = m.group(1).strip(), i
         elif question and answer is None and (m := _A.match(line)):
-            answer = [m.group(1)]
+            answer, end = [m.group(1)], i + 1
         elif answer is not None:
             if not line.strip() or line.lstrip().startswith("#"):
                 flush()
             else:
                 answer.append(line.strip())
+                end = i + 1
         elif question and line.strip():
             question = None  # a Q with no A right after it is just prose
     flush()
-    return list(dict(cards).items())
+    return found
+
+
+def parse_cards(text: str) -> list[tuple[str, str]]:
+    """Question/answer pairs for the review deck. A repeated question keeps its last answer."""
+    return list({c["question"]: c["answer"] for c in scan_cards(text)}.items())
+
+
+def replace_card(text: str, question: str, new_question: str | None, new_answer: str | None) -> str:
+    """Rewrite one card inside a note. Passing None for both removes the card's lines."""
+    spans = [c for c in scan_cards(text) if c["question"] == question]
+    if not spans:
+        raise KeyError(question)
+    lines = text.splitlines()
+    for span in reversed(spans):  # 뒤에서부터 바꿔야 앞쪽 줄 번호가 유지된다
+        if new_question is None:
+            end = span["end"] + (1 if span["end"] < len(lines) and not lines[span["end"]].strip() else 0)
+            lines[span["start"]:end] = []
+        else:
+            lines[span["start"]:span["end"]] = [f"Q: {new_question}", f"A: {new_answer}"]
+    return "\n".join(lines) + ("\n" if text.endswith("\n") or not text else "")
+
+
+def clean_card(question: str, answer: str) -> tuple[str, str]:
+    """Normalize card text so it survives a round trip through the note file."""
+    question = " ".join(str(question).split())
+    answer = "\n".join(line.rstrip() for line in str(answer).strip().splitlines() if line.strip())
+    if not question or not answer:
+        raise ValueError("질문과 답을 모두 적어주세요.")
+    if any(_Q.match(line) or line.lstrip().startswith("#") for line in answer.splitlines()):
+        raise ValueError("답 안에 'Q:'나 '#'으로 시작하는 줄은 넣을 수 없어요. 카드가 거기서 끊겨요.")
+    return question, answer
 
 
 def read(paper: dict) -> dict:
@@ -187,3 +224,52 @@ def search(query: str) -> list[dict]:
         if hits := _snippets(text, needle):
             results.append({"kind": "survey", "name": survey["name"], "title": survey["title"], "snippets": hits})
     return results
+
+
+# ---------- links between papers ----------
+
+_WIKI = re.compile(r"\[\[([^\[\]\n]{1,200})\]\]")
+
+
+def _targets(text: str, papers: list[dict]) -> tuple[dict[str, int], set[int]]:
+    """Papers a note points at: `[[arXiv id / slug / exact title]]` and bare arXiv ids or links."""
+    by_key = {}
+    for p in papers:
+        by_key[p["slug"].casefold()] = p["id"]
+        by_key[p["title"].casefold()] = p["id"]
+        if p["arxiv_id"]:
+            by_key[p["arxiv_id"].casefold()] = p["id"]
+    wiki, linked = {}, set()
+    for inner in _WIKI.findall(text):
+        key = " ".join(inner.split()).casefold()
+        target = by_key.get(key) or by_key.get((arxiv.parse_id(inner) or "").casefold())
+        if target:
+            wiki[inner] = target
+            linked.add(target)
+    by_arxiv = {p["arxiv_id"]: p["id"] for p in papers if p["arxiv_id"]}
+    for found in arxiv.find_ids(text):
+        if found in by_arxiv:
+            linked.add(by_arxiv[found])
+    return wiki, linked
+
+
+def links(paper: dict) -> dict:
+    """Outgoing links from this paper's note, and the notes that mention this paper."""
+    # ponytail: 역방향 링크는 요청마다 모든 노트를 읽는다. 본문 검색과 같은 한계이고, 느려지면 링크 테이블을 둔다.
+    papers = db.list_papers()
+    titles = {p["id"]: p["title"] for p in papers}
+    wiki, out, back = {}, set(), []
+    for other in papers:
+        path = note_path(other["slug"])
+        if not path.exists():
+            continue
+        found_wiki, linked = _targets(path.read_text(encoding="utf-8"), papers)
+        if other["id"] == paper["id"]:
+            wiki, out = found_wiki, linked - {paper["id"]}
+        elif paper["id"] in linked:
+            back.append({"id": other["id"], "title": other["title"]})
+    return {
+        "wiki": wiki,
+        "out": sorted(({"id": i, "title": titles[i]} for i in out), key=lambda x: x["title"]),
+        "back": sorted(back, key=lambda x: x["title"]),
+    }
