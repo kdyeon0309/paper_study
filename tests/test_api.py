@@ -152,6 +152,13 @@ class ApiTest(unittest.TestCase):
 
     def test_05_review_timer_recall_goals(self):
         self.assertEqual(self.call("GET", "/api/review/due"), [], "the only card was graded good and is due later")
+        undone = self.call("POST", "/api/review/undo")
+        self.assertEqual((undone["box"], undone["reviews"]), (0, 0))
+        self.assertEqual(self.call("POST", "/api/review/undo", expect=404)["detail"], "되돌릴 평가가 없어요.")
+        self.assertEqual(len(self.call("GET", "/api/review/due")), 1)
+        self.call("POST", f"/api/review/{undone['id']}", {"grade": "good"})
+        months = self.call("GET", "/api/monthly")
+        self.assertEqual((len(months), months[-1]["reviews"]), (12, 1))
         self.assertTrue(self.call("POST", "/api/papers/2/timer", {"action": "start"})["running"])
         self.assertEqual(self.call("GET", "/api/papers/2")["paper"]["status"], "reading")
         self.assertFalse(self.call("POST", "/api/papers/2/timer", {"action": "stop"})["running"])

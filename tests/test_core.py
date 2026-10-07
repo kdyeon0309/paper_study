@@ -638,6 +638,68 @@ class SurveyLinkTest(TempHome):
         self.assertIsNone(notes.survey_links("nope"))
 
 
+class SafetyTest(TempHome):
+    def test_daily_backup_and_pruning(self):
+        folder = db.backup_dir()
+        self.assertEqual(folder.parent, config.DB_PATH.parent, "backups sit next to the database they copy")
+        self.assertEqual(len(list(folder.glob("*.db"))), 0, "an empty new database is not worth copying yet")
+        p = self.paper()
+        day = date(2026, 10, 1)
+        self.assertTrue(db.backup(day))
+        self.assertFalse(db.backup(day), "one copy per day")
+        for offset in range(1, 10):
+            db.backup(day + timedelta(days=offset))
+        names = sorted(f.name for f in folder.glob("*.db"))
+        self.assertEqual(len(names), db.BACKUPS_KEPT)
+        self.assertEqual((names[0], names[-1]), ("papers-2026-10-04.db", "papers-2026-10-10.db"))
+        copy = sqlite3.connect(folder / names[-1])
+        self.assertEqual(copy.execute("SELECT title FROM papers").fetchall(), [(p["title"],)])
+        copy.close()
+
+    def test_undo_review_restores_card_and_log(self):
+        today = date(2026, 10, 7)
+        p = self.paper()
+        db.sync_cards(p["id"], [("q1", "a1"), ("q2", "a2")], today)
+        first, second = db.cards_for(p["id"])
+        db.grade_card(first["id"], "good", today)
+        before = db.get_card(second["id"])
+        reviews_before = db.weekly(today)["current"]["reviews"]
+        db.grade_card(second["id"], "again", today)
+        self.assertEqual(db.get_card(second["id"])["lapses"], 1)
+
+        restored = db.undo_review()
+        self.assertEqual(restored["paper_title"], "Sparse DETR")
+        self.assertEqual({k: restored[k] for k in before}, before)
+        self.assertEqual(db.weekly(today)["current"]["reviews"], reviews_before)
+        self.assertEqual(db.get_card(first["id"])["box"], 1, "only the last grade is undone")
+        self.assertIsNone(db.undo_review(), "undo works once")
+
+        db.grade_card(first["id"], "good", today)
+        db.sync_cards(p["id"], [("q2", "a2")], today)   # q1이 노트에서 지워짐
+        self.assertIsNone(db.undo_review())
+
+    def test_monthly_totals(self):
+        from datetime import datetime
+        p = self.paper()
+        with db.connect() as conn:
+            conn.execute("DELETE FROM activity")
+            for day, kind in [("2026-10-05", "review"), ("2026-10-05", "review"), ("2026-10-06", "note"), ("2026-08-30", "review"), ("2025-10-31", "review")]:
+                db.log(conn, kind, p["id"], "good", day=day)
+            conn.execute("UPDATE papers SET status='done', finished_at='2026-08-15' WHERE id=?", (p["id"],))
+        start = datetime(2026, 10, 7, 21, 0, 0)
+        db.timer(p["id"], "start", start)
+        for seconds in range(30, 25 * 60 + 30, 30):   # 페이지가 30초마다 보내는 신호
+            db.timer(p["id"], "ping", start + timedelta(seconds=seconds))
+        db.timer(p["id"], "stop", start + timedelta(minutes=25, seconds=30))
+        months = db.monthly(date(2026, 10, 7))
+        self.assertEqual((len(months), months[0]["month"], months[-1]["month"]), (12, "2025-11", "2026-10"))
+        by = {m["month"]: m for m in months}
+        self.assertEqual(by["2026-10"], {"month": "2026-10", "done": 0, "reviews": 2, "notes": 1, "minutes": 25, "active_days": 3})
+        self.assertEqual((by["2026-08"]["done"], by["2026-08"]["reviews"]), (1, 1))
+        self.assertEqual(by["2026-09"]["active_days"], 0, "empty months are still listed")
+        self.assertEqual(db.monthly(date(2026, 1, 15), months=3)[0]["month"], "2025-11", "the window crosses the year boundary")
+
+
 class RoadmapTest(TempHome):
     ITEM = {"arxiv_id": "2010.11929", "title": "ViT", "authors": "A, B", "year": 2020}
 
