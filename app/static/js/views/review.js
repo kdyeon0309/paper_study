@@ -81,6 +81,7 @@ function session(box, queue, { persist, alive }) {
   let revealed = false;
   let busy = false;
   let fixing = false;
+  let last = null;  // 방금 평가한 카드 (되돌리기용)
 
   function draw() {
     const card = queue[0];
@@ -91,7 +92,8 @@ function session(box, queue, { persist, alive }) {
     }
     if (!card) {
       box.innerHTML = `<div class="empty"><h3>${persist ? "오늘 복습 끝" : "연습 끝"}</h3><p>${done}장을 ${persist ? "복습" : "다시 확인"}했어요.</p>
-        <div class="row"><a class="btn primary" href="#/">홈으로</a><a class="btn" href="#/review?tab=weak">약점 보기</a></div></div>`;
+        <div class="row"><a class="btn primary" href="#/">홈으로</a><a class="btn" href="#/review?tab=weak">약점 보기</a>
+          ${persist && last ? `<button class="btn ghost" id="undo-grade">마지막 평가 되돌리기</button>` : ""}</div></div>`;
       return;
     }
     const good = INTERVALS[Math.min(card.box + 1, INTERVALS.length - 1)];
@@ -106,7 +108,8 @@ function session(box, queue, { persist, alive }) {
           <button class="btn primary" data-grade="good">이제 알겠음 <small style="color:inherit;opacity:.85">3</small></button></div>`;
     box.innerHTML = `
       <div class="progress-line"><span>${done} / ${total}</span><div class="meter"><i style="width:${(done / total) * 100}%"></i></div>
-        <span>남은 카드 ${queue.length}장</span></div>
+        <span>남은 카드 ${queue.length}장</span>
+        ${persist && last ? `<button class="linkish" id="undo-grade" title="방금 한 평가를 취소하고 그 카드를 다시 봐요">방금 평가 되돌리기 <kbd>u</kbd></button>` : ""}</div>
       <div class="card flash-card">
         <a class="small muted" href="#/paper/${card.paper_id}">${esc(card.paper_title)}</a>
         <div class="flash-q" style="margin-top:10px">${esc(card.question)}</div>
@@ -126,6 +129,7 @@ function session(box, queue, { persist, alive }) {
       queue.shift();
       if (value === "again") queue.push({ ...card, box: 0 });  // 틀린 카드는 이번 세션 끝에 한 번 더
       else done++;
+      last = { id: card.id, grade: value };
       revealed = false;
     } catch (err) {
       toast(err.message, "error");
@@ -136,7 +140,31 @@ function session(box, queue, { persist, alive }) {
     if (persist) refreshDueBadge();
   }
 
+  async function undo() {
+    if (!persist || !last || busy) return;
+    busy = true;
+    try {
+      const card = await api("/api/review/undo", { method: "POST" });
+      if (last.grade === "again") {
+        const requeued = queue.findIndex((c) => c.id === last.id);
+        if (requeued >= 0) queue.splice(requeued, 1);
+      } else done--;
+      queue.unshift(card);
+      last = null;
+      revealed = true;  // 답은 이미 본 카드다. 바로 다시 평가할 수 있게 한다
+      toast("평가를 되돌렸어요.");
+    } catch (err) {
+      last = null;
+      toast(err.message, "error");
+    }
+    busy = false;
+    if (!alive()) return;
+    draw();
+    refreshDueBadge();
+  }
+
   box.addEventListener("click", (e) => {
+    if (e.target.closest("#undo-grade")) return undo();
     const t = e.target.closest("[data-grade],#reveal,#fix-card,[data-card-cancel]");
     if (!t) return;
     if (t.id === "reveal") { revealed = true; draw(); }
@@ -158,6 +186,7 @@ function session(box, queue, { persist, alive }) {
   });
   const onKey = (e) => {
     if (fixing || e.metaKey || e.ctrlKey || e.altKey || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
+    if (e.key === "u" && last) return undo();
     if (!revealed && (e.key === " " || e.key === "Enter") && queue[0]) { e.preventDefault(); revealed = true; draw(); }
     else if (revealed && ["1", "2", "3"].includes(e.key)) grade(["again", "hard", "good"][Number(e.key) - 1]);
   };
