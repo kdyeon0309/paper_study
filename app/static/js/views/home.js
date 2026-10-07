@@ -1,4 +1,4 @@
-import { api, esc, toast, copy, STATUS } from "../util.js";
+import { api, esc, toast, copy, checkSavedSearches, STATUS } from "../util.js";
 
 const DAY = ["일", "월", "화", "수", "목", "금", "토"];
 const pad = (n) => String(n).padStart(2, "0");
@@ -68,8 +68,10 @@ function weeklyCard(box) {
       <div class="row" style="justify-content:space-between"><span>${label}</span>
         <span class="small muted">${value} / ${target}${unit}${met ? ` <span class="chip done">달성</span>` : ""}</span></div>
       <div class="meter" style="margin-top:6px" role="img" aria-label="${label} ${value} / ${target}${unit}"><i style="width:${Math.min(100, (value / target) * 100)}%"></i></div></div>` : "");
+    const streak = offset === 0 && week.goal_streak > 1
+      ? `<p class="small muted" style="margin-top:8px">${week.goal_streak}주 연속으로 목표를 달성하고 있어요.</p>` : "";
     const goalsHtml = g.goal_days || g.goal_papers
-      ? `<div class="week-lists" style="margin-top:18px">${goalRow("목표: 공부한 날", c.active_days, g.goal_days, g.days_met, "일")}${goalRow("목표: 완독", c.finished, g.goal_papers, g.papers_met, "편")}</div>`
+      ? `<div class="week-lists" style="margin-top:18px">${goalRow("목표: 공부한 날", c.active_days, g.goal_days, g.days_met, "일")}${goalRow("목표: 완독", c.finished, g.goal_papers, g.papers_met, "편")}</div>${streak}`
       : `<p class="small muted" style="margin-top:14px">주간 목표가 꺼져 있어요. '목표'에서 정할 수 있어요.</p>`;
     box.innerHTML = `
       <div class="card-head"><div><h2>${title}</h2><span class="small muted">${md(week.start)} – ${md(week.end)} · 월요일 시작</span></div>
@@ -205,7 +207,7 @@ export async function render(root) {
       <div class="two-col" style="margin-top:12px">
         <div class="card"><div class="card-head"><h2>학습 기록</h2><span class="small muted">최근 20주</span></div>${heatmap(stats.heatmap)}</div>
         <div class="card"><div class="card-head"><h2>오늘 할 일</h2></div>
-          ${todos.join("") || `<p class="muted">밀린 일이 없어요. <a href="#/roadmap">로드맵</a>에서 다음 논문을 골라보세요.</p>`}</div>
+          <div id="todos">${todos.join("") || `<p class="muted" id="no-todos">밀린 일이 없어요. <a href="#/roadmap">로드맵</a>에서 다음 논문을 골라보세요.</p>`}</div></div>
       </div>
       <div class="two-col" style="margin-top:12px">
         <div class="card"><div class="card-head"><h2>최근 활동</h2></div>
@@ -216,6 +218,17 @@ export async function render(root) {
     </div>`;
 
   await weeklyCard(root.querySelector("#weekly"));
+
+  // 저장한 검색에 새 논문이 있으면 할 일에 덧붙인다. 화면을 먼저 그린 뒤 뒤에서 확인한다.
+  let left = false;
+  api("/api/searches").then((searches) => checkSavedSearches(searches, (item, result) => {
+    if (!result.new) return;
+    const box = root.querySelector("#todos");
+    box.querySelector("#no-todos")?.remove();
+    box.insertAdjacentHTML("beforeend", `<div class="todo"><div class="grow"><div>새 논문 ${result.new}${result.more ? "편 이상" : "편"}</div>
+      <div class="small muted">저장한 검색: ${esc(item.q)}${item.cat ? ` · ${esc(item.cat)}` : ""}</div></div>
+      <a class="btn sm" href="#/search?saved=${item.id}">보기</a></div>`);
+  }, () => left)).catch(() => {});
 
   const tip = document.createElement("div");
   tip.className = "tooltip hidden";
@@ -232,5 +245,5 @@ export async function render(root) {
   grid.addEventListener("mouseleave", () => tip.classList.add("hidden"));
   const wrap = root.querySelector(".heatmap-wrap");
   wrap.scrollLeft = wrap.scrollWidth;
-  return () => tip.remove();
+  return () => { left = true; tip.remove(); };
 }

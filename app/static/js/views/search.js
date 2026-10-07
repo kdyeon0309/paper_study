@@ -1,4 +1,4 @@
-import { api, esc, toast, authorsShort, $ } from "../util.js";
+import { api, esc, toast, authorsShort, checkSavedSearches, $ } from "../util.js";
 
 const CATEGORIES = [
   ["", "전체 분야"],
@@ -93,20 +93,7 @@ export async function render(root, { query }) {
   const catLabel = (cat) => (cat ? ` · ${cat}` : "");
   const fresh = {};  // 저장한 검색 id -> 지난번 본 뒤로 올라온 논문 수
   let leaving = false;
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  // arXiv는 요청 간격 3초를 권한다. 캐시에서 온 답이 아니면 다음 확인 전에 쉰다.
-  const checkNew = async () => {
-    for (const item of [...saved]) {
-      if (leaving) return;
-      try {
-        const result = await api(`/api/searches/${item.id}/new`);
-        fresh[item.id] = result;
-        if (leaving) return;
-        drawSaved();
-        if (!result.cached) await sleep(3000);
-      } catch { return; }  // arXiv가 막혔으면 배지 없이 둔다
-    }
-  };
+  const checkNew = () => checkSavedSearches([...saved], (item, result) => { fresh[item.id] = result; drawSaved(); }, () => leaving);
   const drawSaved = () => {
     const box = $("#saved", root);
     if (!box) return;
@@ -119,7 +106,17 @@ export async function render(root, { query }) {
       + (saved.length ? "" : state.searched ? "" : `<span class="small muted">자주 보는 주제는 검색한 뒤 저장해두면 여기서 한 번에 최신 논문을 볼 수 있어요.</span>`);
   };
   drawSaved();
-  checkNew();
+  const runSaved = async (item) => {
+    input.value = item.q;
+    $("#search-cat", root).value = item.cat;
+    $("#search-sort", root).value = "recent";
+    await submit();
+    // 방금 최신순 결과를 봤으니 여기까지를 '본 것'으로 기록한다 (서버는 같은 검색의 캐시를 쓴다)
+    if (!state.error) {
+      await api(`/api/searches/${item.id}/seen`, { method: "POST" });
+      delete fresh[item.id];
+    }
+  };
   $("#saved", root).addEventListener("click", async (e) => {
     const t = e.target;
     try {
@@ -131,16 +128,7 @@ export async function render(root, { query }) {
         await api(`/api/searches/${t.dataset.unsave}`, { method: "DELETE" });
         saved = saved.filter((x) => x.id !== Number(t.dataset.unsave));
       } else if (t.dataset.run) {
-        const item = saved.find((x) => x.id === Number(t.dataset.run));
-        input.value = item.q;
-        $("#search-cat", root).value = item.cat;
-        $("#search-sort", root).value = "recent";
-        await submit();
-        // 방금 최신순 결과를 봤으니 여기까지를 '본 것'으로 기록한다 (서버는 같은 검색의 캐시를 쓴다)
-        if (!state.error) {
-          await api(`/api/searches/${item.id}/seen`, { method: "POST" });
-          delete fresh[item.id];
-        }
+        await runSaved(saved.find((x) => x.id === Number(t.dataset.run)));
       } else return;
     } catch (err) {
       toast(err.message, "error");
@@ -188,9 +176,16 @@ export async function render(root, { query }) {
     }
   });
 
-  if (query.get("q") && query.get("q") !== state.q) {
-    input.value = query.get("q");
-    submit();
+  // 홈의 '새 논문' 알림에서 넘어온 경우: 그 저장한 검색을 바로 최신순으로 연다
+  const wanted = saved.find((x) => x.id === Number(query.get("saved")));
+  if (wanted) {
+    runSaved(wanted).then(drawSaved).catch((err) => toast(err.message, "error")).finally(checkNew);
+  } else {
+    checkNew();
+    if (query.get("q") && query.get("q") !== state.q) {
+      input.value = query.get("q");
+      submit();
+    }
   }
   return () => { leaving = true; root.removeEventListener("searched", onSearched); };
 }
