@@ -7,6 +7,7 @@
     python -m app.cli pending                 # papers waiting for a note
     python -m app.cli status 2010.11929 done
     python -m app.cli refresh                 # 분류·초록이 빈 arXiv 논문의 정보를 다시 받기
+    python -m app.cli today                   # 오늘 할 일과 이번 주 진행
 """
 import argparse
 import sys
@@ -82,6 +83,28 @@ def cmd_status(args):
     print(_line(db.update_paper(p["id"], {"status": args.status})))
 
 
+def cmd_today(_):
+    papers = notes.sync_all()
+    due, recalls, week = db.due_cards(), db.due_recalls(), db.weekly()
+    reading = [p for p in papers if p["status"] == "reading"]
+    todo = []
+    if due:
+        todo.append(f"복습 카드 {len(due)}장")
+    if recalls:
+        todo.append("다시 요약해볼 논문: " + ", ".join(p["title"] for p in recalls[:3]))
+    todo += [f"읽는 중: {p['title']}" + ("" if p["note_mtime"] is not None else " (노트 없음)") for p in reading[:3]]
+    todo += [f"노트 요청 대기: {p['title']}" for p in papers if p["note_requested"]][:3]
+    print("오늘 할 일")
+    print("\n".join(f"  - {line}" for line in todo) if todo else "  밀린 일이 없어요.")
+    c, g = week["current"], week["goals"]
+    goal = lambda value, target, unit: f"{value}{unit}" + (f" / 목표 {target}{unit}" if target else "")
+    print(f"\n이번 주 ({week['start']} ~ {week['end']})")
+    print(f"  공부한 날 {goal(c['active_days'], g['goal_days'], '일')}, 완독 {goal(c['finished'], g['goal_papers'], '편')}, "
+          f"복습 {c['reviews']}장, 읽은 시간 {c['minutes']}분")
+    if week["goal_streak"] > 1:
+        print(f"  {week['goal_streak']}주 연속 목표 달성 중")
+
+
 def cmd_refresh(args):
     targets = [p for p in db.list_papers() if p["arxiv_id"] and (args.all or not p["categories"] or not p["abstract"])]
     if not targets:
@@ -124,6 +147,8 @@ def main(argv=None):
     s.add_argument("ref")
     s.add_argument("status", choices=config.STATUSES)
     s.set_defaults(func=cmd_status)
+
+    sub.add_parser("today", help="오늘 할 일과 이번 주 진행").set_defaults(func=cmd_today)
 
     s = sub.add_parser("refresh", help="arXiv에서 논문 정보 다시 받기")
     s.add_argument("--all", action="store_true", help="정보가 있는 논문도 모두")
