@@ -4,7 +4,75 @@ const days = (n) => (n === 1 ? "내일" : `${n}일 뒤`);
 
 const tabs = (active) => `<div class="toolbar"><div class="tabs">
   <a class="tab" href="#/review" aria-pressed="${active === "due"}">오늘 복습</a>
-  <a class="tab" href="#/review?tab=weak" aria-pressed="${active !== "due"}">약점</a></div></div>`;
+  <a class="tab" href="#/review?tab=recall" aria-pressed="${active === "recall"}">논문 회상</a>
+  <a class="tab" href="#/review?tab=weak" aria-pressed="${active === "weak"}">약점</a></div></div>`;
+
+/** Finished papers, one at a time: write the gist from memory, then compare with the note's own summary. */
+async function recallView(root, alive) {
+  const queue = await api("/api/recall/due");
+  const total = queue.length;
+  let mine = "";
+  let reference = null;
+
+  root.innerHTML = `<div class="page"><div class="page-head"><div><h1>복습</h1>
+    <p>완독한 논문을 시간이 지난 뒤 기억만으로 다시 요약해봐요. 카드가 세부를 묻는다면, 이건 큰 그림을 묻는 거예요.</p></div></div>
+    ${tabs("recall")}<div class="flash" id="recall"></div></div>`;
+  const box = $("#recall", root);
+
+  const draw = () => {
+    const paper = queue[0];
+    if (!paper) {
+      box.innerHTML = `<div class="empty"><h3>${total ? "회상 끝" : "지금 회상할 논문이 없어요"}</h3>
+        <p>논문을 완독으로 표시하면 7일 뒤에 여기서 다시 물어봐요.<br>기억났으면 30일 뒤, 가물가물했으면 7일 뒤에 한 번 더 물어요.</p>
+        <div class="row"><a class="btn" href="#/">홈으로</a></div></div>`;
+      return;
+    }
+    box.innerHTML = `<div class="progress-line"><span>남은 논문 ${queue.length}편</span></div>
+      <div class="card flash-card">
+        <div class="small muted">완독 ${esc(paper.finished_at || "")}</div>
+        <div class="flash-q" style="margin-top:8px">${esc(paper.title)}</div>
+        ${reference ? `
+          <div class="flash-a"><h3>내가 쓴 것</h3><p style="margin-top:4px">${esc(mine)}</p>
+            <h3 style="margin-top:14px">${reference.source === "note" ? "노트의 한 문장 요약" : "논문 초록 (노트에 요약 줄이 없어요)"}</h3>
+            <div class="md" style="margin-top:4px">${renderMarkdown(reference.text || "비교할 내용이 없어요.")}</div></div>
+          <div class="flash-foot"><div class="grade-row" style="grid-template-columns:repeat(2,1fr)">
+            <button class="btn" data-recall="hazy">가물가물했음 <small>7일 뒤 다시</small></button>
+            <button class="btn primary" data-recall="good">핵심은 기억났음 <small style="color:inherit;opacity:.85">30일 뒤 다시</small></button></div>
+            <p class="small muted" style="margin-top:10px;text-align:center"><a href="#/paper/${paper.id}">노트 열어보기</a></p></div>`
+        : `<form id="recall-form" class="stack" style="margin-top:16px">
+            <label class="field"><span>노트를 보지 않고, 이 논문이 무엇을 어떻게 해서 어떤 결과를 얻었는지</span>
+              <textarea class="textarea" name="text" rows="4" required maxlength="2000" placeholder="기억나는 만큼만 적어도 돼요."></textarea></label>
+            <button class="btn primary" type="submit">노트와 비교하기</button></form>`}
+      </div>`;
+    box.querySelector("textarea")?.focus();
+  };
+
+  box.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    mine = new FormData(e.target).get("text").trim();
+    if (!mine) return;
+    try {
+      reference = await api(`/api/recall/${queue[0].id}/reference`);
+    } catch (err) {
+      toast(err.message, "error");
+    }
+    if (alive()) draw();
+  });
+  box.addEventListener("click", async (e) => {
+    const grade = e.target.closest("[data-recall]")?.dataset.recall;
+    if (!grade) return;
+    try {
+      await api(`/api/recall/${queue[0].id}`, { method: "POST", body: { text: mine, grade } });
+      queue.shift();
+      mine = "";
+      reference = null;
+    } catch (err) {
+      toast(err.message, "error");
+    }
+    if (alive()) draw();
+  });
+  draw();
+}
 
 /** Run a flashcard session. `persist: false` is practice: nothing is sent, the schedule is untouched. */
 function session(box, queue, { persist, alive }) {
@@ -128,6 +196,7 @@ async function weakView(root) {
 export async function render(root, { alive, query }) {
   const tab = query.get("tab");
   if (tab === "weak") return weakView(root);
+  if (tab === "recall") return recallView(root, alive);
 
   const practice = tab === "practice";
   const queue = practice ? (await api("/api/review/weak")).cards : await api("/api/review/due");
