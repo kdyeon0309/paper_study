@@ -1,5 +1,6 @@
 import { api, esc, toast, authorsShort, tagsOf, statusSelect, STATUS, $ } from "../util.js";
 
+const PAGE = 100;
 const state = { status: "all", q: "", tag: "", sort: "updated" };
 const SORTS = {
   updated: ["최근 수정순", (a, b) => (b.updated_at || "").localeCompare(a.updated_at || "")],
@@ -76,12 +77,30 @@ export async function render(root) {
     } else if (!shown.length) {
       list.innerHTML = `<div class="empty" style="padding:24px"><h3>제목·저자·태그가 맞는 논문이 없어요</h3><div class="row"><button class="btn" id="clear-filters">필터 지우기</button></div></div>`;
     } else {
-      list.innerHTML = shown.map(row).join("");
+      // 한 번에 PAGE편만 그리고, 목록 끝이 화면에 들어오면 다음 묶음을 붙인다
+      let drawn = 0;
+      watcher.disconnect();
+      list.innerHTML = "";
+      const more = () => {
+        list.querySelector("#lib-more")?.remove();
+        list.insertAdjacentHTML("beforeend", shown.slice(drawn, drawn + PAGE).map(row).join(""));
+        drawn = Math.min(drawn + PAGE, shown.length);
+        if (drawn < shown.length) {
+          list.insertAdjacentHTML("beforeend", `<div class="row" id="lib-more" style="justify-content:center;margin-top:12px">
+            <button class="btn">${shown.length - drawn}편 더 보기</button></div>`);
+          watcher.observe(list.querySelector("#lib-more"));
+        }
+      };
+      nextChunk = more;
+      more();
     }
   };
+  let nextChunk = () => {};
+  const watcher = new IntersectionObserver((entries) => { if (entries.some((e) => e.isIntersecting)) nextChunk(); }, { rootMargin: "600px" });
   draw();
 
   page.addEventListener("click", (e) => {
+    if (e.target.closest("#lib-more")) return nextChunk();
     const t = e.target.closest("[data-status],[data-tag],#clear-filters");
     if (!t) return;
     if (t.id === "clear-filters") { Object.assign(state, { status: "all", q: "", tag: "" }); $("#lib-q", root).value = ""; searchNotes(); }
@@ -162,4 +181,5 @@ export async function render(root) {
     }
     file.value = "";
   });
+  return () => watcher.disconnect();
 }
