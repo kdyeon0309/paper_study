@@ -7,11 +7,12 @@
   --border: #dfdeda;
   --text: #0b0b0b;
   --text-2: #52514e;
-  --text-3: #86857f;
+  --text-3: #6b6a65;
   --accent: #2a78d6;
   --accent-ink: #1c5cab;
   --accent-soft: #e3eefc;
   --on-accent: #fff;
+  --accent-fill: #256abf;  /* 흰 글자를 올리는 채움색. --accent 는 흰 글자와 대비가 4.5:1에 못 미친다 */
   --good: #1e7a34;
   --good-soft: #e2f3e5;
   --danger: #c0392b;
@@ -37,7 +38,7 @@
     --border: #33332f;
     --text: #ffffff;
     --text-2: #c3c2b7;
-    --text-3: #8d8c84;
+    --text-3: #96958d;
     --accent: #3987e5;
     --accent-ink: #86b6ef;
     --accent-soft: #162a44;
@@ -63,7 +64,7 @@
   --border: #33332f;
   --text: #ffffff;
   --text-2: #c3c2b7;
-  --text-3: #8d8c84;
+  --text-3: #96958d;
   --accent: #3987e5;
   --accent-ink: #86b6ef;
   --accent-soft: #162a44;
@@ -114,7 +115,7 @@ kbd {
 .brand { display: flex; align-items: center; gap: 9px; padding: 4px 10px 16px; font-weight: 700; font-size: 16px; color: var(--text); }
 .brand:hover { text-decoration: none; }
 .brand-mark {
-  width: 26px; height: 26px; border-radius: 7px; background: var(--accent); color: var(--on-accent);
+  width: 26px; height: 26px; border-radius: 7px; background: var(--accent-fill); color: var(--on-accent);
   display: grid; place-items: center; font-size: 14px; font-weight: 800;
 }
 .nav a {
@@ -155,7 +156,7 @@ kbd {
 }
 .btn:hover { background: var(--surface-2); text-decoration: none; }
 .btn:disabled { opacity: .55; cursor: default; }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.btn.primary { background: var(--accent-fill); border-color: var(--accent-fill); color: var(--on-accent); }
 .btn.primary:hover { filter: brightness(1.08); }
 .btn.ghost { border-color: transparent; background: transparent; color: var(--text-2); }
 .btn.ghost:hover { background: var(--surface-2); color: var(--text); }
@@ -182,7 +183,7 @@ kbd {
 .badge {
   display: inline-flex; align-items: center; min-width: 20px; justify-content: center;
   padding: 0 7px; height: 20px; border-radius: 10px; font-size: 12px; font-weight: 650;
-  background: var(--accent); color: var(--on-accent);
+  background: var(--accent-fill); color: var(--on-accent);
 }
 .chip {
   display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 999px;
@@ -327,7 +328,7 @@ a.paper-title:hover { color: var(--accent-ink); text-decoration: none; }
 .step { counter-increment: step; }
 .step h3::before {
   content: counter(step); display: inline-grid; place-items: center; width: 22px; height: 22px; margin-right: 8px;
-  border-radius: 50%; background: var(--accent); color: var(--on-accent); font-size: 12px;
+  border-radius: 50%; background: var(--accent-fill); color: var(--on-accent); font-size: 12px;
 }
 .step p { color: var(--text-2); font-size: 14px; margin: 6px 0 12px; }
 
@@ -439,7 +440,7 @@ a.tab:hover { text-decoration: none; }
 .map-svg.dense.focusing .map-node.near text { display: block; }
 
 /* ---------- skip link, focus ---------- */
-.skip { position: fixed; top: 8px; left: 8px; z-index: 100; padding: 8px 14px; border-radius: 8px; border: none; background: var(--accent); color: var(--on-accent); font-weight: 600; transform: translateY(-200%); }
+.skip { position: fixed; top: 8px; left: 8px; z-index: 100; padding: 8px 14px; border-radius: 8px; border: none; background: var(--accent-fill); color: var(--on-accent); font-weight: 600; transform: translateY(-200%); }
 .skip:focus { transform: none; }
 #view:focus { outline: none; }
 input[type="radio"] { accent-color: var(--accent); }
@@ -457,3 +458,23 @@ input[type="radio"] { accent-color: var(--accent); }
 .chart-hit { fill: transparent; cursor: default; }
 .chart-hit:hover, .chart-hit:focus { fill: var(--text); fill-opacity: .06; outline: none; }
 .activity th { text-align: left; font-weight: 600; color: var(--text-2); padding: 4px 12px 6px 0; }
+
+/* ---------- print: 노트만 종이에 ---------- */
+@media print {
+  :root, :root[data-theme="dark"] {
+    color-scheme: light; --bg: #fff; --surface: #fff; --surface-2: #f2f2f0; --border: #cfcfca;
+    --text: #000; --text-2: #333; --text-3: #555; --accent-ink: #1c5cab; --accent-soft: #eef4fd;
+  }
+  .sidebar, .toasts, .skip, .crumb, .btn, .tabs, .toolbar, .save-state, #note-extra, #cards-card, #links-card,
+  .paper-head .meta-grid, .paper-head label.field, details.card:not([open]), .note-editor, .suggest { display: none !important; }
+  .shell { display: block; }
+  .main { padding: 0; }
+  .page, .page.wide { max-width: none; }
+  .card { border: none; padding: 0; margin: 0 0 12px; }
+  .note-area { display: block; }
+  .note-area .note-preview { max-height: none !important; overflow: visible !important; }
+  .md { max-width: none; }
+  .md h2, .md h3 { break-after: avoid; }
+  .md pre, .md blockquote, .md table, .katex-display { break-inside: avoid; }
+  a { color: inherit; text-decoration: none; }
+}
