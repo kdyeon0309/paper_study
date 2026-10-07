@@ -41,7 +41,9 @@ function weeklyCard(box) {
     const c = week.current;
     const acc = c.accuracy === null ? "" : ` (정답률 ${Math.round(c.accuracy * 100)}%)`;
     const list = (title, items) => (items.length ? `\n### ${title}\n${items.map((p) => `- ${p.title}`).join("\n")}\n` : "");
-    return `## 주간 회고 (${md(week.start)} – ${md(week.end)})\n\n- 공부한 날: ${c.active_days}일\n- 완독: ${c.finished}편\n- 노트 쓴 논문: ${c.notes}편\n- 복습한 카드: ${c.reviews}장${acc}\n${list("완독한 논문", week.finished)}${list("노트를 쓴 논문", week.noted)}`;
+    const g = week.goals;
+    const goal = (value, target, unit) => (target ? ` (목표 ${target}${unit}${value >= target ? " 달성" : ""})` : "");
+    return `## 주간 회고 (${md(week.start)} – ${md(week.end)})\n\n- 공부한 날: ${c.active_days}일${goal(c.active_days, g.goal_days, "일")}\n- 완독: ${c.finished}편${goal(c.finished, g.goal_papers, "편")}\n- 노트 쓴 논문: ${c.notes}편\n- 복습한 카드: ${c.reviews}장${acc}\n${list("완독한 논문", week.finished)}${list("노트를 쓴 논문", week.noted)}`;
   };
 
   const draw = () => {
@@ -61,20 +63,37 @@ function weeklyCard(box) {
     const title = offset === 0 ? "이번 주" : offset === -1 ? "지난주" : `${-offset}주 전`;
     const links = (items) => items.map((x) => `<li><a href="#/paper/${x.id}">${esc(x.title)}</a></li>`).join("");
     const quiet = !c.active_days && !c.finished;
+    const g = week.goals;
+    const goalRow = (label, value, target, met, unit) => (target ? `<div>
+      <div class="row" style="justify-content:space-between"><span>${label}</span>
+        <span class="small muted">${value} / ${target}${unit}${met ? ` <span class="chip done">달성</span>` : ""}</span></div>
+      <div class="meter" style="margin-top:6px" role="img" aria-label="${label} ${value} / ${target}${unit}"><i style="width:${Math.min(100, (value / target) * 100)}%"></i></div></div>` : "");
+    const goalsHtml = g.goal_days || g.goal_papers
+      ? `<div class="week-lists" style="margin-top:18px">${goalRow("목표: 공부한 날", c.active_days, g.goal_days, g.days_met, "일")}${goalRow("목표: 완독", c.finished, g.goal_papers, g.papers_met, "편")}</div>`
+      : `<p class="small muted" style="margin-top:14px">주간 목표가 꺼져 있어요. '목표'에서 정할 수 있어요.</p>`;
     box.innerHTML = `
       <div class="card-head"><div><h2>${title}</h2><span class="small muted">${md(week.start)} – ${md(week.end)} · 월요일 시작</span></div>
-        <div class="row"><button class="btn sm" id="week-copy" ${quiet ? "disabled" : ""}>회고 복사</button>
+        <div class="row"><button class="btn sm" id="week-goal">목표</button>
+          <button class="btn sm" id="week-copy" ${quiet ? "disabled" : ""}>회고 복사</button>
           <button class="btn sm" id="week-prev" aria-label="이전 주">‹</button>
           <button class="btn sm" id="week-next" aria-label="다음 주" ${offset === 0 ? "disabled" : ""}>›</button></div></div>
       <div class="week-stats">${stats.map(([label, value, unit, note]) => `<div><div class="label">${label}</div>
         <div class="value">${value}<small>${unit}</small></div><div class="delta">${note}</div></div>`).join("")}</div>
+      ${goalsHtml}
       <div class="week-strip">${week.days.map((d, i) => `<div class="week-day${d.day > todayKey ? " future" : ""}">
         <div class="heat-cell" data-level="${d.day > todayKey ? 0 : level(d.count)}" role="img" aria-label="${DAY[(i + 1) % 7]}요일 활동 ${d.count}건"></div>
         ${DAY[(i + 1) % 7]} <b>${d.day > todayKey ? "" : d.count || ""}</b></div>`).join("")}</div>
       ${week.finished.length || week.noted.length ? `<div class="week-lists">
         ${week.finished.length ? `<div><h3>완독한 논문</h3><ul>${links(week.finished)}</ul></div>` : ""}
         ${week.noted.length ? `<div><h3>노트를 쓴 논문</h3><ul>${links(week.noted)}</ul></div>` : ""}</div>` : ""}
-      ${quiet ? `<p class="muted small" style="margin-top:12px">이 주에는 기록이 없어요.</p>` : ""}`;
+      ${quiet ? `<p class="muted small" style="margin-top:12px">이 주에는 기록이 없어요.</p>` : ""}
+      <dialog id="goal-dialog"><h2>주간 목표</h2>
+        <p class="muted small" style="margin-bottom:10px">월요일부터 일요일까지 한 주 기준이에요. 0으로 두면 그 목표는 꺼져요.</p>
+        <form id="goal-form" method="dialog">
+          <label class="field"><span>공부한 날 (일)</span><input class="input" name="goal_days" type="number" min="0" max="7" required value="${g.goal_days}"></label>
+          <label class="field"><span>완독 (편)</span><input class="input" name="goal_papers" type="number" min="0" max="50" required value="${g.goal_papers}"></label>
+          <div class="dialog-actions"><button class="btn" type="button" id="goal-cancel">취소</button><button class="btn primary" type="submit">저장</button></div>
+        </form></dialog>`;
   };
 
   const load = async () => {
@@ -87,6 +106,19 @@ function weeklyCard(box) {
     if (e.target.id === "week-prev") { offset -= 1; load(); }
     else if (e.target.id === "week-next" && offset < 0) { offset += 1; load(); }
     else if (e.target.id === "week-copy") toast((await copy(summary())) ? "회고를 마크다운으로 복사했어요." : "복사하지 못했어요.");
+    else if (e.target.id === "week-goal") box.querySelector("#goal-dialog").showModal();
+    else if (e.target.id === "goal-cancel") box.querySelector("#goal-dialog").close();
+  });
+  box.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const data = Object.fromEntries(new FormData(e.target));
+    try {
+      await api("/api/goals", { method: "PUT", body: { goal_days: Number(data.goal_days), goal_papers: Number(data.goal_papers) } });
+      toast("목표를 저장했어요.");
+      await load();
+    } catch (err) {
+      toast(err.message, "error");
+    }
   });
   return load();
 }
