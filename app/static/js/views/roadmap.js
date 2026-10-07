@@ -2,6 +2,7 @@ import { api, esc, toast, confirmDialog, authorsShort, STATUS, $ } from "../util
 
 const KINDS = ["기초", "논문", "새 영역"];
 const state = { kind: "all", open: null, editingWhy: null };
+let showStartHint = false;
 
 function itemRow(track, p, i) {
   const title = p.paper_id
@@ -31,9 +32,10 @@ function trackCard(t) {
   const key = esc(t.key);
   return `<details class="card track" data-key="${key}" ${state.open.has(t.key) ? "open" : ""}>
     <summary><div class="track-head">
-      <div><span class="chip">${esc(t.kind)}</span>${t.editable ? ` <span class="chip reading">내 트랙</span>` : ""}
+      <div><span class="chip">${esc(t.kind)}</span>${t.editable ? ` <span class="chip reading">내 트랙</span>` : ""}${showStartHint && t.start_hint ? ` <span class="chip done">추천 시작</span>` : ""}
         <strong style="font-size:16px;margin-left:4px">${esc(t.name)}</strong>
-        ${t.description ? `<div class="small muted" style="margin-top:4px">${esc(t.description)}</div>` : ""}</div>
+        ${t.description ? `<div class="small muted" style="margin-top:4px">${esc(t.description)}</div>` : ""}
+        ${showStartHint && t.start_hint ? `<div class="small" style="margin-top:4px;color:var(--good)">${esc(t.start_hint)}</div>` : ""}</div>
       <span class="small muted">${done} / ${t.papers.length}편 완독</span>
       <div class="meter"><i style="width:${pct}%"></i></div></div></summary>
     ${t.papers.length ? `<ol class="track-list">${t.papers.map((p, i) => itemRow(t, p, i)).join("")}</ol>`
@@ -51,10 +53,13 @@ function trackCard(t) {
 
 export async function render(root, { alive }) {
   let tracks = await api("/api/roadmaps");
+  const nothingStarted = !tracks.some((t) => t.papers.some((p) => p.paper_id));
   if (state.open === null) {
     const inProgress = tracks.find((t) => t.papers.some((p) => p.paper_id) && t.papers.some((p) => p.status !== "done"));
-    state.open = new Set([(inProgress || tracks[0])?.key]);
+    // 아직 아무 트랙도 시작하지 않았다면 추천 트랙을 펼쳐 둔다
+    state.open = new Set([(inProgress || (nothingStarted && tracks.find((t) => t.start_hint)) || tracks[0])?.key]);
   }
+  showStartHint = nothingStarted;
 
   root.innerHTML = `<div class="page">
     <div class="page-head"><div><h1>로드맵</h1><p>분야별로 읽는 순서를 정리한 목록이에요. 기본 트랙의 논문은 모두 arXiv에서 확인한 것만 넣었어요.</p></div>

@@ -161,7 +161,8 @@
     "year": 2023,
     "why": "텍스트로 물체를 지정하는 open-set detection."
    }
-  ]
+  ],
+  "start_hint": "YOLO 시리즈를 읽었다면 여기서 시작하세요. 아는 것(one-stage)에서 모르는 것(two-stage, DETR)으로 넘어가는 가장 짧은 길이에요."
  },
  {
   "key": "transformer",
