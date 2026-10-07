@@ -1,6 +1,7 @@
 import { api, esc, toast, renderMarkdown, refreshDueBadge, cardForm, submitCardForm, INTERVALS, $ } from "../util.js";
 
 const days = (n) => (n === 1 ? "내일" : `${n}일 뒤`);
+const SESSION = 20;  // 한 번에 보는 카드 수. 밀린 카드가 많아도 끝이 보이게 나눈다
 
 const tabs = (active) => `<div class="toolbar"><div class="tabs">
   <a class="tab" href="#/review" aria-pressed="${active === "due"}">오늘 복습</a>
@@ -75,7 +76,7 @@ async function recallView(root, alive) {
 }
 
 /** Run a flashcard session. `persist: false` is practice: nothing is sent, the schedule is untouched. */
-function session(box, queue, { persist, alive }) {
+function session(box, queue, { persist, alive, waiting = 0 }) {
   const total = queue.length;
   let done = 0;
   let revealed = false;
@@ -91,8 +92,10 @@ function session(box, queue, { persist, alive }) {
       return;
     }
     if (!card) {
-      box.innerHTML = `<div class="empty"><h3>${persist ? "오늘 복습 끝" : "연습 끝"}</h3><p>${done}장을 ${persist ? "복습" : "다시 확인"}했어요.</p>
-        <div class="row"><a class="btn primary" href="#/">홈으로</a><a class="btn" href="#/review?tab=weak">약점 보기</a>
+      box.innerHTML = `<div class="empty"><h3>${waiting ? "이번 묶음 끝" : persist ? "오늘 복습 끝" : "연습 끝"}</h3>
+        <p>${done}장을 ${persist ? "복습" : "다시 확인"}했어요.${waiting ? ` 아직 ${waiting}장이 남아 있어요. 여기서 멈춰도 내일 다시 나와요.` : ""}</p>
+        <div class="row">${waiting ? `<button class="btn primary" id="next-batch">다음 ${Math.min(waiting, SESSION)}장 계속</button>` : ""}
+          <a class="btn ${waiting ? "" : "primary"}" href="#/">홈으로</a><a class="btn" href="#/review?tab=weak">약점 보기</a>
           ${persist && last ? `<button class="btn ghost" id="undo-grade">마지막 평가 되돌리기</button>` : ""}</div></div>`;
       return;
     }
@@ -164,6 +167,7 @@ function session(box, queue, { persist, alive }) {
   }
 
   box.addEventListener("click", (e) => {
+    if (e.target.closest("#next-batch")) return window.dispatchEvent(new HashChangeEvent("hashchange"));
     if (e.target.closest("#undo-grade")) return undo();
     const t = e.target.closest("[data-grade],#reveal,#fix-card,[data-card-cancel]");
     if (!t) return;
@@ -228,7 +232,9 @@ export async function render(root, { alive, query }) {
   if (tab === "recall") return recallView(root, alive);
 
   const practice = tab === "practice";
-  const queue = practice ? (await api("/api/review/weak")).cards : await api("/api/review/due");
+  const all = practice ? (await api("/api/review/weak")).cards : await api("/api/review/due");
+  const queue = practice ? all : all.slice(0, SESSION);
+  const waiting = all.length - queue.length;
   if (!queue.length) {
     root.innerHTML = `<div class="page"><div class="page-head"><div><h1>복습</h1></div></div>${tabs(practice ? "weak" : "due")}
       <div class="empty"><h3>${practice ? "연습할 카드가 없어요" : "오늘 복습할 카드가 없어요"}</h3>
@@ -238,7 +244,7 @@ export async function render(root, { alive, query }) {
     return;
   }
   root.innerHTML = `<div class="page"><div class="page-head"><div><h1>복습</h1>
-    <p>${practice ? "자주 틀린 카드만 모아서 다시 봐요." : "답을 떠올려 본 다음 확인하세요."}</p></div></div>
+    <p>${practice ? "자주 틀린 카드만 모아서 다시 봐요." : waiting ? `밀린 카드 ${all.length}장 중 ${queue.length}장을 먼저 봐요. 한 번에 다 하지 않아도 돼요.` : "답을 떠올려 본 다음 확인하세요."}</p></div></div>
     ${tabs(practice ? "weak" : "due")}<div class="flash" id="flash"></div></div>`;
-  return session($("#flash", root), queue, { persist: !practice, alive });
+  return session($("#flash", root), queue, { persist: !practice, alive, waiting });
 }
