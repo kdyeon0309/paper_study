@@ -3,11 +3,12 @@ import json
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import arxiv, config, db, exporter, notes, roadmaps as tracks
+from . import VERSION, arxiv, config, db, exporter, notes, roadmaps as tracks
 
 Status = Literal["to_read", "reading", "done"]
 
@@ -117,6 +118,44 @@ def _decorate(paper: dict) -> dict:
 @app.exception_handler(arxiv.ArxivError)
 async def arxiv_error(_, exc: arxiv.ArxivError):
     return JSONResponse({"detail": str(exc)}, status_code=502)
+
+
+FIELD_NAMES = {
+    "title": "제목", "authors": "저자", "year": "연도", "url": "링크", "tags": "태그", "status": "읽기 상태",
+    "question": "질문", "answer": "답", "content": "노트 내용", "grade": "평가", "text": "내용", "q": "검색어",
+    "name": "이름", "kind": "종류", "description": "설명", "ref": "arXiv ID", "why": "읽는 이유", "ids": "arXiv ID 목록",
+    "goal_days": "공부한 날 목표", "goal_papers": "완독 목표", "action": "동작", "move": "이동",
+}
+
+
+def _explain(error: dict) -> str:
+    """One validation error as a Korean sentence."""
+    kind, ctx = error.get("type", ""), error.get("ctx") or {}
+    field = next((str(p) for p in reversed(error.get("loc", ())) if isinstance(p, str) and p not in ("body", "query", "path")), "")
+    name = FIELD_NAMES.get(field, field or "입력값")
+    if kind == "missing":
+        return f"{name}: 꼭 필요한 값이에요."
+    if kind in ("string_too_short", "too_short"):
+        return f"{name}: 비워둘 수 없어요."
+    if kind in ("string_too_long", "too_long"):
+        return f"{name}: 너무 길어요 (최대 {ctx.get('max_length', '?')})."
+    if kind in ("less_than_equal", "greater_than_equal", "less_than", "greater_than"):
+        bound = ctx.get("le", ctx.get("ge", ctx.get("lt", ctx.get("gt"))))
+        return f"{name}: {bound} {'이하여야' if kind.startswith('less') else '이상이어야'} 해요."
+    if kind in ("int_parsing", "int_type", "int_from_float", "float_parsing"):
+        return f"{name}: 숫자로 적어주세요."
+    if kind in ("literal_error", "enum"):
+        return f"{name}: {str(ctx.get('expected', '정해진 값')).replace(' or ', ', ')} 중 하나여야 해요."
+    if kind in ("json_invalid", "dict_type", "model_attributes_type"):
+        return "보낸 내용의 형식이 올바르지 않아요."
+    if kind in ("string_type", "bool_parsing", "bool_type", "list_type"):
+        return f"{name}: 값의 종류가 맞지 않아요."
+    return f"{name}: 값을 확인해주세요."
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(_, exc: RequestValidationError):
+    return JSONResponse({"detail": " ".join(dict.fromkeys(_explain(e) for e in exc.errors()))}, status_code=422)
 
 
 @app.exception_handler(KeyError)
@@ -370,6 +409,19 @@ def recall_reference(paper_id: int):
 def recall_record(paper_id: int, body: Recall):
     _paper_or_404(paper_id)
     return db.record_recall(paper_id, body.text, body.grade)
+
+
+@app.get("/api/about")
+def about():
+    """Version and where the data lives, for the settings screen."""
+    return {
+        "version": VERSION,
+        "home": str(config.HOME),
+        "files": {"db": config.DB_PATH.name, "notes": config.NOTES_DIR.name, "surveys": config.SURVEYS_DIR.name,
+                  "tracks": config.USER_ROADMAP_FILE.name},
+        "counts": {"papers": len(db.list_papers()), "surveys": len(notes.list_surveys()),
+                   "tracks": len(tracks.user_tracks()), "searches": len(db.saved_searches())},
+    }
 
 
 @app.get("/api/goals")
