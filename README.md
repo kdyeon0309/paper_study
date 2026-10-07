@@ -7,12 +7,20 @@
 ## 실행
 
 ```bash
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-.venv/bin/uvicorn app.main:app --port 8000
+./run.sh
 ```
 
-브라우저에서 http://localhost:8000 을 연다.
+처음이면 가상환경을 만들고 의존성을 설치한 뒤, 서버를 켜고 브라우저를 연다. 다른 포트는 `./run.sh --port 8010`, 브라우저를 열지 않으려면 `--no-open`.
+
+직접 하려면:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python -m app
+```
+
+단축키는 화면에서 `?`를 누르면 나온다.
 
 ## 화면
 
@@ -83,6 +91,7 @@ app/
   roadmaps.py   기본 트랙과 내 트랙
   exporter.py   BibTeX, 백업/복원
   cli.py        터미널 명령
+  __main__.py   python -m app (서버 실행 + 브라우저 열기)
   static/       화면 (빌드 없는 ES 모듈). vendor/ 에 마크다운·수식 라이브러리 포함
 tests/          python -m unittest discover -s tests
 ```
@@ -95,4 +104,4 @@ tests/          python -m unittest discover -s tests
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-네트워크 없이 돌아간다. 기획은 [PLAN.md](PLAN.md), 개선 이력과 남은 일은 [IMPROVEMENTS.md](IMPROVEMENTS.md)에 있다.
+함수 단위 테스트(`test_core.py`)와, 실제 서버를 띄워 HTTP로 확인하는 테스트(`test_api.py`)가 있다. 둘 다 네트워크 없이 돌아간다. 기획은 [PLAN.md](PLAN.md), 개선 이력과 남은 일은 [IMPROVEMENTS.md](IMPROVEMENTS.md)에 있다.
