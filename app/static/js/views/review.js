@@ -1,4 +1,4 @@
-import { api, esc, toast, renderMarkdown, refreshDueBadge, INTERVALS, $ } from "../util.js";
+import { api, esc, toast, renderMarkdown, refreshDueBadge, cardForm, submitCardForm, INTERVALS, $ } from "../util.js";
 
 const days = (n) => (n === 1 ? "내일" : `${n}일 뒤`);
 
@@ -12,9 +12,15 @@ function session(box, queue, { persist, alive }) {
   let done = 0;
   let revealed = false;
   let busy = false;
+  let fixing = false;
 
   function draw() {
     const card = queue[0];
+    if (card && fixing) {
+      box.innerHTML = `<div class="card flash-card"><div class="small muted" style="margin-bottom:10px">${esc(card.paper_title)}</div>${cardForm(card)}</div>`;
+      box.querySelector("input").focus();
+      return;
+    }
     if (!card) {
       box.innerHTML = `<div class="empty"><h3>${persist ? "오늘 복습 끝" : "연습 끝"}</h3><p>${done}장을 ${persist ? "복습" : "다시 확인"}했어요.</p>
         <div class="row"><a class="btn primary" href="#/">홈으로</a><a class="btn" href="#/review?tab=weak">약점 보기</a></div></div>`;
@@ -39,6 +45,7 @@ function session(box, queue, { persist, alive }) {
         ${revealed ? `<div class="flash-a md">${renderMarkdown(card.answer)}</div>` : ""}
         <div class="flash-foot">${revealed ? buttons : `<button class="btn primary" id="reveal" style="width:100%">답 보기 <kbd>Space</kbd></button>`}</div>
       </div>
+      ${revealed ? `<p style="text-align:center;margin-top:10px"><button class="linkish" id="fix-card">카드 내용이 틀렸거나 어색한가요? 고치기</button></p>` : ""}
       ${persist ? "" : `<p class="small muted" style="text-align:center;margin-top:10px">연습 모드예요. 복습 일정과 기록은 바뀌지 않아요.</p>`}`;
   }
 
@@ -62,12 +69,27 @@ function session(box, queue, { persist, alive }) {
   }
 
   box.addEventListener("click", (e) => {
-    const t = e.target.closest("[data-grade],#reveal");
+    const t = e.target.closest("[data-grade],#reveal,#fix-card,[data-card-cancel]");
     if (!t) return;
-    if (t.id === "reveal") { revealed = true; draw(); } else grade(t.dataset.grade);
+    if (t.id === "reveal") { revealed = true; draw(); }
+    else if (t.id === "fix-card") { fixing = true; draw(); }
+    else if ("cardCancel" in t.dataset) { fixing = false; draw(); }
+    else grade(t.dataset.grade);
+  });
+  box.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    try {
+      const { card } = await submitCardForm(e.target);
+      Object.assign(queue[0], { question: card.question, answer: card.answer });
+      fixing = false;
+      toast("카드를 고쳤어요.");
+    } catch (err) {
+      toast(err.message, "error");
+    }
+    if (alive()) draw();
   });
   const onKey = (e) => {
-    if (e.metaKey || e.ctrlKey || e.altKey || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
+    if (fixing || e.metaKey || e.ctrlKey || e.altKey || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
     if (!revealed && (e.key === " " || e.key === "Enter") && queue[0]) { e.preventDefault(); revealed = true; draw(); }
     else if (revealed && ["1", "2", "3"].includes(e.key)) grade(["again", "hard", "good"][Number(e.key) - 1]);
   };

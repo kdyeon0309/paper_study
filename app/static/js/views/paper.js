@@ -1,11 +1,13 @@
-import { api, esc, toast, copy, confirmDialog, statusSelect, renderMarkdown, notePrompt, refreshDueBadge, STATUS, $ } from "../util.js";
+import { api, esc, toast, copy, confirmDialog, statusSelect, renderMarkdown, notePrompt, refreshDueBadge, cardForm, submitCardForm, STATUS, $ } from "../util.js";
 
 const AUTOSAVE_MS = 1000;
 const POLL_MS = 6000;
 
 export async function render(root, { args, alive }) {
   const id = Number(args[0]);
-  let { paper, note, cards, bibtex, tracks } = await api(`/api/papers/${id}`);
+  let { paper, note, cards, bibtex, tracks, links } = await api(`/api/papers/${id}`);
+  let editingCard = null;
+  const md = (text) => renderMarkdown(text, { wiki: links.wiki });
   let content = note.content;
   let mtime = note.mtime;
   let exists = note.exists;
@@ -49,6 +51,7 @@ export async function render(root, { args, alive }) {
         <div id="note-extra" class="stack"></div>
         <div id="note-body"></div>
       </div>
+      <div class="card hidden" id="links-card"></div>
       <div class="card" id="cards-card"></div>
     </div>`;
 
@@ -63,13 +66,22 @@ export async function render(root, { args, alive }) {
         <textarea class="note-editor" id="editor" spellcheck="false" aria-label="노트 편집 (마크다운)"></textarea>
         <div class="note-preview md" id="preview"></div></div>`;
       $("#editor", root).value = content;
-      $("#preview", root).innerHTML = renderMarkdown(content);
+      $("#preview", root).innerHTML = md(content);
     } else if (content.trim()) {
-      body.innerHTML = `<div class="md" style="margin-top:12px">${renderMarkdown(content)}</div>`;
+      body.innerHTML = `<div class="md" style="margin-top:12px">${md(content)}</div>`;
     } else {
       body.innerHTML = `<div class="empty"><h3>아직 노트가 없어요</h3>
         <p>템플릿으로 직접 쓰거나, Claude Code에 요청해 초안을 받아보세요.<br>어느 쪽이든 같은 파일(${esc(note.path)})에 저장돼요.</p></div>`;
     }
+  }
+
+  function drawLinks() {
+    const box = $("#links-card", root);
+    const list = (items) => `<ul style="margin:4px 0 0;padding-left:18px">${items.map((x) => `<li><a href="#/paper/${x.id}">${esc(x.title)}</a></li>`).join("")}</ul>`;
+    box.classList.toggle("hidden", !links.out.length && !links.back.length);
+    box.innerHTML = `<h2>연결된 논문</h2><div class="week-lists" style="margin-top:10px">
+      ${links.out.length ? `<div><h3>이 노트가 언급한 논문</h3>${list(links.out)}</div>` : ""}
+      ${links.back.length ? `<div><h3>이 논문을 언급한 노트</h3>${list(links.back)}</div>` : ""}</div>`;
   }
 
   function drawCards() {
@@ -79,9 +91,13 @@ export async function render(root, { args, alive }) {
       return;
     }
     card.innerHTML = `<div class="card-head"><h2>복습 카드 ${cards.length}장</h2><a class="btn sm" href="#/review">복습하러 가기</a></div>
-      ${cards.map((c) => `<details style="padding:8px 0;border-top:1px solid var(--border)">
-        <summary style="cursor:pointer">${esc(c.question)} <span class="small muted">· 다음 복습 ${esc(c.due.slice(5).replace("-", "/"))}</span></summary>
-        <div class="md" style="margin-top:8px">${renderMarkdown(c.answer)}</div></details>`).join("")}`;
+      ${cards.map((c) => (c.id === editingCard
+        ? `<div style="padding:12px 0;border-top:1px solid var(--border)">${cardForm(c)}</div>`
+        : `<details style="padding:8px 0;border-top:1px solid var(--border)">
+        <summary style="cursor:pointer">${esc(c.question)} <span class="small muted">· 다음 복습 ${esc(c.due.slice(5).replace("-", "/"))}${c.reviews ? ` · ${c.reviews}번 복습` : ""}</span></summary>
+        <div class="md" style="margin-top:8px">${md(c.answer)}</div>
+        <div class="row" style="margin-top:8px"><button class="btn sm" data-card-edit="${c.id}">수정</button>
+          <button class="btn sm ghost danger" data-card-delete="${c.id}">카드 삭제</button></div></details>`)).join("")}`;
   }
 
   function showConflict() {
@@ -102,8 +118,9 @@ export async function render(root, { args, alive }) {
       mtime = result.note.mtime;
       exists = true;
       cards = result.cards;
+      links = result.links;
       paper.note_requested = 0;
-      if (alive()) { setState("저장됨"); drawCards(); refreshDueBadge(); }
+      if (alive()) { setState("저장됨"); drawCards(); drawLinks(); refreshDueBadge(); }
     } catch (err) {
       dirty = true;
       if (err.status === 409) { conflict = true; if (alive()) showConflict(); }
@@ -118,24 +135,63 @@ export async function render(root, { args, alive }) {
   async function reload(announce) {
     const data = await api(`/api/papers/${id}`);
     if (!alive()) return;
-    ({ paper, note, cards } = data);
+    ({ paper, note, cards, links } = data);
     content = note.content; mtime = note.mtime; exists = note.exists;
     dirty = false; conflict = false;
     extra.innerHTML = "";
     setState("");
     drawNote();
     drawCards();
+    drawLinks();
     if (announce) toast(announce);
   }
 
   drawNote();
   drawCards();
+  drawLinks();
+
+  // 카드 수정·삭제는 서버가 노트 파일의 Q/A 줄을 고친다. 편집기에 저장 안 된 내용이 있으면 먼저 저장한다.
+  const cardsBox = $("#cards-card", root);
+  cardsBox.addEventListener("click", async (e) => {
+    const t = e.target;
+    if (t.dataset.cardEdit) {
+      editingCard = Number(t.dataset.cardEdit);
+      drawCards();
+      $(".card-edit input", root)?.focus();
+    } else if ("cardCancel" in t.dataset) {
+      editingCard = null;
+      drawCards();
+    } else if (t.dataset.cardDelete) {
+      const target = cards.find((c) => c.id === Number(t.dataset.cardDelete));
+      const ok = await confirmDialog({ title: "이 카드를 삭제할까요?", text: `"${target.question}" — 노트에서도 이 Q/A 줄이 지워져요.`, ok: "삭제" });
+      if (!ok) return;
+      try {
+        if (dirty) await save();
+        await api(`/api/cards/${target.id}`, { method: "DELETE" });
+        await reload("카드를 삭제했어요.");
+        refreshDueBadge();
+      } catch (err) {
+        toast(err.message, "error");
+      }
+    }
+  });
+  cardsBox.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    try {
+      if (dirty) await save();
+      await submitCardForm(e.target);
+      editingCard = null;
+      await reload("카드를 고쳤어요.");
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  });
 
   body.addEventListener("input", (e) => {
     if (e.target.id !== "editor") return;
     content = e.target.value;
     dirty = true;
-    $("#preview", root).innerHTML = renderMarkdown(content);
+    $("#preview", root).innerHTML = md(content);
     if (conflict) return;
     setState("수정 중…");
     clearTimeout(timer);

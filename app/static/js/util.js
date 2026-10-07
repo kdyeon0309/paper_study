@@ -130,14 +130,17 @@ function renderMath({ tex, display }) {
 }
 
 /** Markdown -> sanitized HTML. Math is lifted out first so `_` and `*` inside it survive the parser. */
-export function renderMarkdown(source) {
+export function renderMarkdown(source, { wiki = {} } = {}) {
   source = String(source || "");
   if (!window.marked || !window.DOMPurify) return `<pre>${esc(source)}</pre>`;
   setupPurify();
   const math = [];
   const text = source
     .split(CODE)
-    .map((part, i) => (i % 2 ? part : part.replace(MATH, (_, block, bracket, inline) => {
+    .map((part, i) => (i % 2 ? part : part
+      // [[arXiv ID 또는 제목]] 은 라이브러리에 있는 논문이면 그 논문으로 가는 링크가 된다
+      .replace(/\[\[([^\[\]\n]{1,200})\]\]/g, (whole, inner) => (wiki[inner] ? `[${inner}](#/paper/${wiki[inner]})` : whole))
+      .replace(MATH, (_, block, bracket, inline) => {
       const tex = block ?? bracket ?? inline;
       math.push({ tex: tex.trim(), display: inline === undefined });
       return `@@MATH${math.length - 1}@@`;
@@ -145,6 +148,22 @@ export function renderMarkdown(source) {
     .join("");
   const html = window.DOMPurify.sanitize(window.marked.parse(text, { gfm: true, breaks: true }));
   return html.replace(/@@MATH(\d+)@@/g, (_, i) => renderMath(math[Number(i)]));
+}
+
+/* ---------- 복습 카드 편집 폼 (논문 화면과 복습 화면이 같이 쓴다) ---------- */
+
+export function cardForm(card) {
+  return `<form class="card-edit stack" data-card="${card.id}" style="gap:8px">
+    <label class="field"><span>질문</span><input class="input" name="question" value="${esc(card.question)}" required maxlength="500"></label>
+    <label class="field"><span>답</span><textarea class="textarea" name="answer" rows="3" required maxlength="5000">${esc(card.answer)}</textarea></label>
+    <div class="row"><button class="btn sm primary" type="submit">저장</button>
+      <button class="btn sm" type="button" data-card-cancel>취소</button>
+      <span class="small muted">노트 파일의 Q/A 줄이 함께 바뀌고, 복습 진도는 유지돼요.</span></div></form>`;
+}
+
+export async function submitCardForm(form) {
+  const body = Object.fromEntries(new FormData(form));
+  return api(`/api/cards/${form.dataset.card}`, { method: "PATCH", body });
 }
 
 /* ---------- Claude Code 프롬프트 ---------- */
@@ -163,6 +182,7 @@ export function notePrompt(paper) {
 - notes/_TEMPLATE.md 의 구성을 따르고, 수식은 $...$ / $$...$$ 로 써줘.
 - 논문에서 확인한 내용만 쓰고, 확인하지 못한 수치는 쓰지 말아줘.
 - 마지막 "복습 카드" 섹션에 Q: / A: 형식 카드를 5개 이상 넣어줘.
+- 내 라이브러리에 있는 다른 논문을 언급할 때는 [[arXiv ID]] 로 써줘 (목록: \`python -m app.cli list\`).
 - 논문 정보는 \`python -m app.cli show ${paper.slug}\` 로 볼 수 있어.${backgroundLine()}`;
 }
 
