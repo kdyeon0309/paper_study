@@ -272,6 +272,7 @@ def links(paper: dict) -> dict:
         "wiki": {inner: {"id": target, "title": titles[target]} for inner, target in wiki.items()},
         "out": sorted(({"id": i, "title": titles[i]} for i in out), key=lambda x: x["title"]),
         "back": sorted(back, key=lambda x: x["title"]),
+        "surveys": surveys_mentioning(paper),
     }
 
 
@@ -286,7 +287,8 @@ def graph() -> dict:
             edges.update((paper["id"], target) for target in linked if target != paper["id"])
     connected = {i for edge in edges for i in edge}
     return {
-        "nodes": [{"id": p["id"], "title": p["title"], "status": p["status"], "year": p["year"]}
+        "nodes": [{"id": p["id"], "title": p["title"], "status": p["status"], "year": p["year"],
+                   "tags": p["tags"], "arxiv_id": p["arxiv_id"]}
                   for p in papers if p["id"] in connected],
         "edges": [{"from": a, "to": b} for a, b in sorted(edges)],
         "isolated": len(papers) - len(connected),
@@ -316,3 +318,44 @@ def append_card(text: str, question: str, answer: str, title: str) -> str:
     tail = [""] if end < len(lines) and lines[end].strip() else []
     lines[end:end] = [*gap, *card, *tail]
     return "\n".join(lines) + "\n"
+
+
+def summary_line(paper: dict) -> str:
+    """The note's one-sentence summary: its first blockquote line, without a leading label."""
+    path = note_path(paper["slug"])
+    if not path.exists():
+        return ""
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.lstrip().startswith(">"):
+            text = line.lstrip()[1:].strip()
+            text = re.sub(r"^\**한\s*문장\s*요약\s*[:：]?\**\s*[:：]?\s*", "", text)
+            if text:
+                return text
+    return ""
+
+
+def survey_links(name: str) -> dict | None:
+    """Library papers a survey mentions, and arXiv papers it cites that are not saved yet."""
+    text = read_survey(name)
+    if text is None:
+        return None
+    papers = db.list_papers()
+    by_id = {p["id"]: p for p in papers}
+    wiki, linked = _targets(text, papers)
+    saved = {p["arxiv_id"] for p in papers if p["arxiv_id"]}
+    return {
+        "wiki": {inner: {"id": t, "title": by_id[t]["title"]} for inner, t in wiki.items()},
+        "papers": sorted(({"id": i, "title": by_id[i]["title"], "status": by_id[i]["status"]} for i in linked),
+                         key=lambda x: x["title"]),
+        "missing": sorted(arxiv.find_ids(text) - saved),
+    }
+
+
+def surveys_mentioning(paper: dict) -> list[dict]:
+    papers = db.list_papers()
+    found = []
+    for survey in list_surveys():
+        _, linked = _targets(read_survey(survey["name"]) or "", papers)
+        if paper["id"] in linked:
+            found.append({"name": survey["name"], "title": survey["title"]})
+    return found
