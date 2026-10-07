@@ -57,8 +57,10 @@ CREATE TABLE IF NOT EXISTS saved_searches (
     q TEXT NOT NULL,
     cat TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL DEFAULT '',
     UNIQUE (q, cat)
 );
+CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_papers_slug ON papers(slug);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_papers_arxiv ON papers(arxiv_id) WHERE arxiv_id IS NOT NULL;
 """
@@ -112,6 +114,8 @@ def init():
         for name in ("reviews", "lapses"):  # v0.3
             if name not in card_cols:
                 conn.execute(f"ALTER TABLE cards ADD COLUMN {name} INTEGER NOT NULL DEFAULT 0")
+        if "last_seen_at" not in {r["name"] for r in conn.execute("PRAGMA table_info(saved_searches)")}:  # v0.4
+            conn.execute("ALTER TABLE saved_searches ADD COLUMN last_seen_at TEXT NOT NULL DEFAULT ''")
 
 
 def normalize_tags(tags: str | None) -> str:
@@ -253,16 +257,50 @@ def delete_paper(paper_id: int) -> bool:
 
 def saved_searches() -> list[dict]:
     with connect() as conn:
-        return [dict(r) for r in conn.execute("SELECT id, q, cat FROM saved_searches ORDER BY id")]
+        return [dict(r) for r in conn.execute("SELECT id, q, cat, last_seen_at FROM saved_searches ORDER BY id")]
 
 
-def save_search(q: str, cat: str = "") -> dict:
+def get_search(search_id: int) -> dict | None:
+    with connect() as conn:
+        row = conn.execute("SELECT id, q, cat, last_seen_at FROM saved_searches WHERE id=?", (search_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def save_search(q: str, cat: str = "", last_seen_at: str = "") -> dict:
     q = " ".join(q.split())
     if not q:
         raise ValueError("검색어를 적어주세요.")
     with connect() as conn:
-        conn.execute("INSERT OR IGNORE INTO saved_searches (q, cat, created_at) VALUES (?,?,?)", (q, cat, _now()))
-        return dict(conn.execute("SELECT id, q, cat FROM saved_searches WHERE q=? AND cat=?", (q, cat)).fetchone())
+        conn.execute("INSERT OR IGNORE INTO saved_searches (q, cat, created_at, last_seen_at) VALUES (?,?,?,?)",
+                     (q, cat, _now(), last_seen_at))
+        return dict(conn.execute("SELECT id, q, cat, last_seen_at FROM saved_searches WHERE q=? AND cat=?", (q, cat)).fetchone())
+
+
+def mark_search_seen(search_id: int, newest: str):
+    """Remember the newest paper shown, so later checks can count what arrived after it. Never moves backwards."""
+    with connect() as conn:
+        conn.execute("UPDATE saved_searches SET last_seen_at=? WHERE id=? AND last_seen_at < ?", (newest, search_id, newest))
+
+
+# ---------- settings ----------
+
+GOAL_DEFAULTS = {"goal_days": 4, "goal_papers": 1}
+
+
+def goals() -> dict:
+    with connect() as conn:
+        stored = {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM settings WHERE key LIKE 'goal_%'")}
+    return {k: int(stored.get(k, default)) for k, default in GOAL_DEFAULTS.items()}
+
+
+def set_goals(goal_days: int, goal_papers: int) -> dict:
+    if not (0 <= goal_days <= 7 and 0 <= goal_papers <= 50):
+        raise ValueError("목표는 주 0~7일, 논문 0~50편 사이로 정해주세요.")
+    with connect() as conn:
+        for key, value in (("goal_days", goal_days), ("goal_papers", goal_papers)):
+            conn.execute("INSERT INTO settings (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                         (key, str(value)))
+    return goals()
 
 
 def delete_search(search_id: int) -> bool:
@@ -289,6 +327,23 @@ def sync_cards(paper_id: int, pairs: list[tuple[str, str]], today: date | None =
                     "INSERT INTO cards (paper_id, question, answer, box, due) VALUES (?,?,?,0,?)",
                     (paper_id, question, answer, today.isoformat()),
                 )
+
+
+def get_card(card_id: int) -> dict | None:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM cards WHERE id=?", (card_id,)).fetchone()
+        return dict(row) if row else None
+
+
+def rename_card(card_id: int, question: str, answer: str):
+    """Change a card's text in place so its review progress carries over to the new wording."""
+    with connect() as conn:
+        row = conn.execute("SELECT paper_id FROM cards WHERE id=?", (card_id,)).fetchone()
+        clash = conn.execute("SELECT 1 FROM cards WHERE paper_id=? AND question=? AND id<>?",
+                             (row["paper_id"], question, card_id)).fetchone()
+        if clash:
+            raise ValueError("같은 질문의 카드가 이미 있어요.")
+        conn.execute("UPDATE cards SET question=?, answer=? WHERE id=?", (question, answer, card_id))
 
 
 def cards_for(paper_id: int) -> list[dict]:
@@ -411,9 +466,14 @@ def weekly(today: date | None = None, offset: int = 0) -> dict:
         noted = [dict(r) for r in conn.execute(
             """SELECT DISTINCT p.id, p.title FROM activity a JOIN papers p ON p.id = a.paper_id
                WHERE a.kind='note' AND a.day BETWEEN ? AND ? ORDER BY p.title""", (a, b))]
+        current = summarize(conn, start)
+        targets = goals()
         return {
             "start": a, "end": b, "offset": offset, "is_current": offset == 0,
-            "current": summarize(conn, start),
+            "goals": {**targets,
+                      "days_met": bool(targets["goal_days"]) and current["active_days"] >= targets["goal_days"],
+                      "papers_met": bool(targets["goal_papers"]) and current["finished"] >= targets["goal_papers"]},
+            "current": current,
             "previous": summarize(conn, start - timedelta(weeks=1)),
             "days": [{"day": (start + timedelta(days=i)).isoformat(),
                       "count": days.get((start + timedelta(days=i)).isoformat(), 0)} for i in range(7)],
