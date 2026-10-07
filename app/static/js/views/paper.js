@@ -48,7 +48,8 @@ export async function render(root, { args, alive }) {
         <div class="card-head">
           <div><h2>노트</h2><span class="small muted">${esc(note.path)}</span></div>
           <div class="row"><span class="save-state" id="save-state"></span>
-            <button class="btn sm" id="claude-btn">Claude에게 요청</button>
+            <button class="btn sm ghost" id="print-btn" title="노트만 인쇄하거나 PDF로 저장해요">인쇄</button>
+          <button class="btn sm" id="claude-btn">Claude에게 요청</button>
             <button class="btn sm primary" id="edit-btn"></button></div>
         </div>
         <div id="note-extra" class="stack"></div>
@@ -331,6 +332,11 @@ export async function render(root, { args, alive }) {
     if (!alive()) return;
     drawNote();
     if (editing) $("#editor", root).focus();
+  });
+
+  $("#print-btn", root).addEventListener("click", async () => {
+    if (editing) { editing = false; await save(); drawNote(); }  // 인쇄는 편집기가 아니라 완성된 노트를
+    window.print();
   });
 
   $("#claude-btn", root).addEventListener("click", async () => {
