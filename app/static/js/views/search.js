@@ -91,17 +91,35 @@ export async function render(root, { query }) {
   // 저장한 검색: 관심 주제를 한 번에 최신순으로 다시 본다
   let saved = await api("/api/searches").catch(() => []);
   const catLabel = (cat) => (cat ? ` · ${cat}` : "");
+  const fresh = {};  // 저장한 검색 id -> 지난번 본 뒤로 올라온 논문 수
+  let leaving = false;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // arXiv는 요청 간격 3초를 권한다. 캐시에서 온 답이 아니면 다음 확인 전에 쉰다.
+  const checkNew = async () => {
+    for (const item of [...saved]) {
+      if (leaving) return;
+      try {
+        const result = await api(`/api/searches/${item.id}/new`);
+        fresh[item.id] = result;
+        if (leaving) return;
+        drawSaved();
+        if (!result.cached) await sleep(3000);
+      } catch { return; }  // arXiv가 막혔으면 배지 없이 둔다
+    }
+  };
   const drawSaved = () => {
     const box = $("#saved", root);
     if (!box) return;
     const current = saved.some((x) => x.q === state.q && x.cat === state.cat);
     box.innerHTML = saved.map((x) => `<span class="chip tag" style="padding-right:4px">
         <button class="linkish" data-run="${x.id}" title="최신순으로 검색" style="color:inherit;font-size:12px">${esc(x.q)}${esc(catLabel(x.cat))}</button>
+        ${fresh[x.id]?.new ? `<span class="badge" title="지난번에 본 뒤로 올라온 논문">새 ${fresh[x.id].new}${fresh[x.id].more ? "+" : ""}</span>` : ""}
         <button class="icon-btn" data-unsave="${x.id}" aria-label="저장한 검색 삭제" style="width:18px;height:18px;font-size:11px">✕</button></span>`).join("")
       + (state.searched && state.q && !current && !state.error ? `<button class="btn sm ghost" id="save-search">＋ 이 검색 저장</button>` : "")
       + (saved.length ? "" : state.searched ? "" : `<span class="small muted">자주 보는 주제는 검색한 뒤 저장해두면 여기서 한 번에 최신 논문을 볼 수 있어요.</span>`);
   };
   drawSaved();
+  checkNew();
   $("#saved", root).addEventListener("click", async (e) => {
     const t = e.target;
     try {
@@ -117,8 +135,12 @@ export async function render(root, { query }) {
         input.value = item.q;
         $("#search-cat", root).value = item.cat;
         $("#search-sort", root).value = "recent";
-        submit();
-        return;
+        await submit();
+        // 방금 최신순 결과를 봤으니 여기까지를 '본 것'으로 기록한다 (서버는 같은 검색의 캐시를 쓴다)
+        if (!state.error) {
+          await api(`/api/searches/${item.id}/seen`, { method: "POST" });
+          delete fresh[item.id];
+        }
       } else return;
     } catch (err) {
       toast(err.message, "error");
@@ -133,7 +155,7 @@ export async function render(root, { query }) {
     state.q = input.value.trim();
     state.cat = $("#search-cat", root).value;
     state.sort = $("#search-sort", root).value;
-    if (state.q) run(root);
+    return state.q ? run(root) : Promise.resolve();
   };
   $("#search-form", root).addEventListener("submit", (e) => { e.preventDefault(); submit(); });
   $("#search-cat", root).addEventListener("change", submit);
@@ -170,5 +192,5 @@ export async function render(root, { query }) {
     input.value = query.get("q");
     submit();
   }
-  return () => root.removeEventListener("searched", onSearched);
+  return () => { leaving = true; root.removeEventListener("searched", onSearched); };
 }
