@@ -400,6 +400,108 @@ class InsightTest(TempHome):
         self.assertEqual((card["reviews"], card["lapses"]), (1, 1))
 
 
+class CardEditTest(TempHome):
+    NOTE = """# 제목
+
+본문 Q: 는 카드가 아니다.
+
+## 복습 카드
+Q: 첫 질문
+A: 첫 답
+  둘째 줄
+
+- **Q:** 둘째 질문
+- **A:** 둘째 답
+
+## 끝
+마지막 줄
+"""
+
+    def test_replace_card_touches_only_its_lines(self):
+        edited = notes.replace_card(self.NOTE, "첫 질문", "고친 질문", "고친 답\n추가 줄")
+        self.assertEqual(notes.parse_cards(edited), [("고친 질문", "고친 답\n추가 줄"), ("둘째 질문", "둘째 답")])
+        self.assertIn("본문 Q: 는 카드가 아니다.", edited)
+        self.assertTrue(edited.endswith("## 끝\n마지막 줄\n"))
+        self.assertEqual(len(edited.splitlines()), len(self.NOTE.splitlines()), "two answer lines became two")
+
+        removed = notes.replace_card(self.NOTE, "둘째 질문", None, None)
+        self.assertEqual(notes.parse_cards(removed), [("첫 질문", "첫 답\n둘째 줄")])
+        self.assertNotIn("둘째", removed.replace("둘째 줄", ""))
+        self.assertNotIn("\n\n\n", removed, "no doubled blank line is left behind")
+        with self.assertRaises(KeyError):
+            notes.replace_card(self.NOTE, "없는 질문", "x", "y")
+
+    def test_clean_card(self):
+        self.assertEqual(notes.clean_card("  여러   공백  ", "\n답\n\n둘째  \n"), ("여러 공백", "답\n둘째"))
+        for question, answer in (("", "답"), ("질문", "  "), ("질문", "답\nQ: 끼어든 질문"), ("질문", "# 제목")):
+            with self.assertRaises(ValueError, msg=(question, answer)):
+                notes.clean_card(question, answer)
+
+    def test_editing_a_card_keeps_its_progress(self):
+        p = self.paper()
+        notes.write(p, self.NOTE, None)
+        card = next(c for c in db.cards_for(p["id"]) if c["question"] == "첫 질문")
+        db.grade_card(card["id"], "good")
+        question, answer = notes.clean_card("고친 질문", "고친 답")
+        note = notes.read(p)
+        text = notes.replace_card(note["content"], card["question"], question, answer)
+        db.rename_card(card["id"], question, answer)
+        notes.write(db.get_paper(p["id"]), text, note["mtime"])
+        after = db.get_card(card["id"])
+        self.assertEqual((after["question"], after["answer"], after["box"], after["reviews"]), ("고친 질문", "고친 답", 1, 1))
+        self.assertEqual(len(db.cards_for(p["id"])), 2)
+        with self.assertRaises(ValueError):
+            db.rename_card(card["id"], "둘째 질문", "x")
+
+
+class LinkTest(TempHome):
+    def test_find_ids_ignores_plain_decimals(self):
+        text = "정확도 2304.08069 는 숫자일 뿐. arXiv:2010.11929 와 https://arxiv.org/abs/1706.03762v5 는 논문."
+        self.assertEqual(arxiv.find_ids(text), {"2010.11929", "1706.03762"})
+        self.assertEqual(arxiv.find_ids(""), set())
+
+    def test_links_and_backlinks(self):
+        detr = self.paper()
+        vit = db.add_paper({"title": "An Image is Worth 16x16 Words", "url": "https://arxiv.org/abs/2010.11929"})[0]
+        book = db.add_paper({"title": "Linear Algebra Done Right"})[0]
+        lonely = db.add_paper({"title": "Unrelated", "url": "https://arxiv.org/abs/1412.6980"})[0]
+        notes.write(detr, "backbone은 [[2010.11929]] 참고. 수학은 [[linear algebra done right]].\n"
+                          "자기 자신 [[2111.14330]] 과 없는 [[논문 X]] 도 적음.\n", None)
+        notes.write(vit, "후속 연구: https://arxiv.org/abs/2111.14330 (Sparse DETR)\n", None)
+
+        got = notes.links(db.get_paper(detr["id"]))
+        self.assertEqual([x["id"] for x in got["out"]], [vit["id"], book["id"]])
+        self.assertEqual(got["wiki"], {"2010.11929": vit["id"], "linear algebra done right": book["id"], "2111.14330": detr["id"]})
+        self.assertEqual([x["id"] for x in got["back"]], [vit["id"]])
+        self.assertEqual([x["id"] for x in notes.links(db.get_paper(vit["id"]))["back"]], [detr["id"]])
+        self.assertEqual(notes.links(db.get_paper(lonely["id"])), {"wiki": {}, "out": [], "back": []})
+
+
+class GoalTest(TempHome):
+    def test_goals_and_weekly_progress(self):
+        self.assertEqual(db.goals(), {"goal_days": 4, "goal_papers": 1})
+        self.assertEqual(db.set_goals(2, 0), {"goal_days": 2, "goal_papers": 0})
+        with self.assertRaises(ValueError):
+            db.set_goals(8, 1)
+        p = self.paper()
+        with db.connect() as conn:
+            conn.execute("DELETE FROM activity")
+            db.log(conn, "added", p["id"], day="2026-10-05")
+            db.log(conn, "review", p["id"], "good", day="2026-10-06")
+        week = db.weekly(date(2026, 10, 7))
+        self.assertEqual(week["goals"], {"goal_days": 2, "goal_papers": 0, "days_met": True, "papers_met": False},
+                         "a goal of zero is switched off, not automatically met")
+        self.assertFalse(db.weekly(date(2026, 10, 7), offset=-1)["goals"]["days_met"])
+
+    def test_saved_search_seen_marker_only_moves_forward(self):
+        saved = db.save_search("detr", "cs.CV", "2026-10-01T00:00:00Z")
+        db.mark_search_seen(saved["id"], "2026-09-01T00:00:00Z")
+        self.assertEqual(db.get_search(saved["id"])["last_seen_at"], "2026-10-01T00:00:00Z")
+        db.mark_search_seen(saved["id"], "2026-10-05T00:00:00Z")
+        self.assertEqual(db.get_search(saved["id"])["last_seen_at"], "2026-10-05T00:00:00Z")
+        self.assertIsNone(db.get_search(999))
+
+
 class RoadmapTest(TempHome):
     ITEM = {"arxiv_id": "2010.11929", "title": "ViT", "authors": "A, B", "year": 2020}
 
