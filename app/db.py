@@ -25,7 +25,11 @@ PAPER_COLUMNS = {
     "note_mtime": "REAL",
     "updated_at": "TEXT",
     "finished_at": "TEXT",
+    # v0.6
+    "recall_due": "TEXT",
 }
+RECALL_FIRST, RECALL_GOOD, RECALL_HAZY = 7, 30, 7   # 완독 뒤 첫 회상 / 기억났을 때 / 가물가물할 때 다음 회상까지의 일수
+SESSION_GAP = 120                                   # 이 시간(초) 넘게 신호가 없으면 읽기 세션이 끝난 것으로 본다
 EDITABLE = {"title", "authors", "year", "url", "pdf_url", "abstract", "tags", "status", "note_requested"}
 INSERTABLE = ("title", "authors", "year", "url", "pdf_url", "abstract", "tags", "status",
               "arxiv_id", "published", "categories", "comment")
@@ -61,6 +65,21 @@ CREATE TABLE IF NOT EXISTS saved_searches (
     UNIQUE (q, cat)
 );
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS reading_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    paper_id INTEGER NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+    started_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    seconds INTEGER NOT NULL DEFAULT 0,
+    open INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS recalls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    paper_id INTEGER NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+    day TEXT NOT NULL,
+    text TEXT NOT NULL,
+    grade TEXT NOT NULL          -- good | hazy
+);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_papers_slug ON papers(slug);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_papers_arxiv ON papers(arxiv_id) WHERE arxiv_id IS NOT NULL;
 """
@@ -114,6 +133,9 @@ def init():
         for name in ("reviews", "lapses"):  # v0.3
             if name not in card_cols:
                 conn.execute(f"ALTER TABLE cards ADD COLUMN {name} INTEGER NOT NULL DEFAULT 0")
+        # v0.6: 이미 완독한 논문도 회상 대상에 넣는다 (완독 7일 뒤)
+        conn.execute("UPDATE papers SET recall_due = date(finished_at, '+7 days') "
+                     "WHERE status='done' AND recall_due IS NULL AND finished_at IS NOT NULL")
         if "last_seen_at" not in {r["name"] for r in conn.execute("PRAGMA table_info(saved_searches)")}:  # v0.4
             conn.execute("ALTER TABLE saved_searches ADD COLUMN last_seen_at TEXT NOT NULL DEFAULT ''")
 
@@ -185,6 +207,7 @@ def add_paper(data: dict) -> tuple[dict, bool]:
     fields["created_at"] = fields["updated_at"] = now
     if fields["status"] == "done":
         fields["finished_at"] = now[:10]
+        fields["recall_due"] = (date.today() + timedelta(days=RECALL_FIRST)).isoformat()
     with connect() as conn:
         if arxiv_id:
             row = conn.execute("SELECT * FROM papers WHERE arxiv_id=?", (arxiv_id,)).fetchone()
@@ -216,7 +239,9 @@ def update_paper(paper_id: int, fields: dict) -> dict | None:
             return None
         if updates:
             if "status" in updates and updates["status"] != row["status"]:
-                updates["finished_at"] = date.today().isoformat() if updates["status"] == "done" else None
+                done = updates["status"] == "done"
+                updates["finished_at"] = date.today().isoformat() if done else None
+                updates["recall_due"] = (date.today() + timedelta(days=RECALL_FIRST)).isoformat() if done else None
                 log(conn, "status", paper_id, updates["status"])
             updates["updated_at"] = _now()
             sets = ", ".join(f"{k}=?" for k in updates)
@@ -455,6 +480,8 @@ def weekly(today: date | None = None, offset: int = 0) -> dict:
             "reviews": reviews,
             "accuracy": (reviews - missed) / reviews if reviews else None,
             "active_days": one("SELECT COUNT(DISTINCT day) FROM activity WHERE day BETWEEN ? AND ?"),
+            "minutes": one("SELECT COALESCE(SUM(seconds), 0) FROM reading_sessions "
+                           "WHERE substr(started_at, 1, 10) BETWEEN ? AND ?") // 60,
         }
 
     with connect() as conn:
@@ -512,3 +539,77 @@ def goal_streak(today: date | None = None, max_weeks: int = 260) -> int:
         count += 1
         week -= timedelta(weeks=1)
     return count
+
+
+# ---------- reading time ----------
+
+def _close_stale(conn, now: datetime):
+    """End sessions whose page stopped reporting (tab closed, laptop asleep). Time counts up to the last report."""
+    limit = (now - timedelta(seconds=SESSION_GAP)).isoformat(timespec="seconds")
+    conn.execute("UPDATE reading_sessions SET open=0 WHERE open=1 AND last_seen_at < ?", (limit,))
+
+
+def timer(paper_id: int, action: str, now: datetime | None = None) -> dict:
+    """start / ping / stop the reading timer. Only one paper is timed at a time."""
+    if action not in ("start", "ping", "stop"):
+        raise ValueError(f"unknown timer action: {action}")
+    now = now or datetime.now()
+    stamp = now.isoformat(timespec="seconds")
+    with connect() as conn:
+        _close_stale(conn, now)
+        current = conn.execute("SELECT * FROM reading_sessions WHERE open=1 AND paper_id=?", (paper_id,)).fetchone()
+        if action == "start" and not current:
+            conn.execute("UPDATE reading_sessions SET open=0 WHERE open=1")
+            conn.execute("INSERT INTO reading_sessions (paper_id, started_at, last_seen_at) VALUES (?,?,?)",
+                         (paper_id, stamp, stamp))
+            row = conn.execute("SELECT status FROM papers WHERE id=?", (paper_id,)).fetchone()
+            if row and row["status"] == "to_read":
+                conn.execute("UPDATE papers SET status='reading', updated_at=? WHERE id=?", (stamp, paper_id))
+                log(conn, "status", paper_id, "reading", day=now.date().isoformat())
+            log(conn, "read", paper_id, day=now.date().isoformat(), once_per_day=True)
+        elif current:
+            seconds = int((now - datetime.fromisoformat(current["started_at"])).total_seconds())
+            conn.execute("UPDATE reading_sessions SET last_seen_at=?, seconds=?, open=? WHERE id=?",
+                         (stamp, max(0, seconds), int(action != "stop"), current["id"]))
+    return timer_state(paper_id)
+
+
+def timer_state(paper_id: int) -> dict:
+    with connect() as conn:
+        total = conn.execute("SELECT COALESCE(SUM(seconds), 0) FROM reading_sessions WHERE paper_id=?", (paper_id,)).fetchone()[0]
+        current = conn.execute("SELECT seconds FROM reading_sessions WHERE open=1 AND paper_id=?", (paper_id,)).fetchone()
+    return {"running": current is not None, "seconds": total, "session_seconds": current["seconds"] if current else 0}
+
+
+# ---------- recall ----------
+
+def due_recalls(today: date | None = None) -> list[dict]:
+    """Finished papers whose turn has come to be summarized again from memory."""
+    today = today or date.today()
+    with connect() as conn:
+        rows = conn.execute(
+            """SELECT id, slug, title, abstract, finished_at, recall_due FROM papers
+               WHERE status='done' AND recall_due IS NOT NULL AND recall_due <= ? ORDER BY recall_due, id""",
+            (today.isoformat(),))
+        return [dict(r) for r in rows]
+
+
+def record_recall(paper_id: int, text: str, grade: str, today: date | None = None) -> dict:
+    if grade not in ("good", "hazy"):
+        raise ValueError(f"unknown recall grade: {grade}")
+    text = text.strip()
+    if not text:
+        raise ValueError("기억나는 대로 한 문장이라도 적어주세요.")
+    today = today or date.today()
+    wait = RECALL_GOOD if grade == "good" else RECALL_HAZY
+    with connect() as conn:
+        conn.execute("INSERT INTO recalls (paper_id, day, text, grade) VALUES (?,?,?,?)",
+                     (paper_id, today.isoformat(), text, grade))
+        conn.execute("UPDATE papers SET recall_due=? WHERE id=?", ((today + timedelta(days=wait)).isoformat(), paper_id))
+        log(conn, "recall", paper_id, grade, day=today.isoformat())
+    return {"next": (today + timedelta(days=wait)).isoformat()}
+
+
+def recalls_for(paper_id: int) -> list[dict]:
+    with connect() as conn:
+        return [dict(r) for r in conn.execute("SELECT day, text, grade FROM recalls WHERE paper_id=? ORDER BY id DESC", (paper_id,))]
