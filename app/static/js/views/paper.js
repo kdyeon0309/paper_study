@@ -1,11 +1,11 @@
-import { api, esc, toast, copy, confirmDialog, statusSelect, renderMarkdown, notePrompt, refreshDueBadge, cardForm, submitCardForm, STATUS, $ } from "../util.js";
+import { api, esc, toast, copy, confirmDialog, statusSelect, renderMarkdown, notePrompt, refreshDueBadge, cardForm, submitCardForm, duration, STATUS, $ } from "../util.js";
 
 const AUTOSAVE_MS = 1000;
 const POLL_MS = 6000;
 
 export async function render(root, { args, alive }) {
   const id = Number(args[0]);
-  let { paper, note, cards, bibtex, tracks, links } = await api(`/api/papers/${id}`);
+  let { paper, note, cards, bibtex, tracks, links, timer, recalls } = await api(`/api/papers/${id}`);
   let editingCard = null;
   const md = (text) => renderMarkdown(text, { wiki: links.wiki });
   let content = note.content;
@@ -15,7 +15,7 @@ export async function render(root, { args, alive }) {
   let dirty = false;
   let saving = false;
   let conflict = false;
-  let timer = null;
+  let saveTimer = null;
 
   const meta = [paper.year, paper.categories, paper.comment].filter(Boolean).map(esc).join(" · ");
   root.innerHTML = `
@@ -29,6 +29,8 @@ export async function render(root, { args, alive }) {
           <span id="status-slot">${statusSelect(paper)}</span>
           ${paper.url ? `<a class="btn sm" href="${esc(paper.url)}" target="_blank" rel="noopener">${paper.arxiv_id ? "arXiv" : "원문"} ↗</a>` : ""}
           ${paper.pdf_url ? `<a class="btn sm" href="${esc(paper.pdf_url)}" target="_blank" rel="noopener">PDF ↗</a>` : ""}
+          <button class="btn sm" id="timer-btn" title="이 화면을 열어둔 동안의 시간을 재요. 다른 화면으로 가면 멈춰요."></button>
+          <span class="small muted" id="timer-total"></span>
           <button class="btn sm" id="bib-btn">BibTeX 복사</button>
           ${paper.arxiv_id ? `<button class="btn sm" id="refresh-btn" title="제목·저자·초록·분류를 arXiv에서 다시 받아요">정보 새로고침</button>` : ""}
           <span class="grow"></span>
@@ -79,10 +81,12 @@ export async function render(root, { args, alive }) {
   function drawLinks() {
     const box = $("#links-card", root);
     const list = (items) => `<ul style="margin:4px 0 0;padding-left:18px">${items.map((x) => `<li><a href="#/paper/${x.id}">${esc(x.title)}</a></li>`).join("")}</ul>`;
-    box.classList.toggle("hidden", !links.out.length && !links.back.length);
-    box.innerHTML = `<h2>연결된 논문</h2><div class="week-lists" style="margin-top:10px">
+    box.classList.toggle("hidden", !links.out.length && !links.back.length && !links.surveys.length && !recalls.length);
+    box.innerHTML = `<h2>연결과 기록</h2><div class="week-lists" style="margin-top:10px">
       ${links.out.length ? `<div><h3>이 노트가 언급한 논문</h3>${list(links.out)}</div>` : ""}
-      ${links.back.length ? `<div><h3>이 논문을 언급한 노트</h3>${list(links.back)}</div>` : ""}</div>`;
+      ${links.back.length ? `<div><h3>이 논문을 언급한 노트</h3>${list(links.back)}</div>` : ""}
+      ${links.surveys.length ? `<div><h3>이 논문이 나온 서베이</h3><ul style="margin:4px 0 0;padding-left:18px">${links.surveys.map((x) => `<li><a href="#/surveys/${esc(x.name)}">${esc(x.title)}</a></li>`).join("")}</ul></div>` : ""}
+      ${recalls.length ? `<div><h3>기억으로 다시 쓴 요약</h3><ul style="margin:4px 0 0;padding-left:18px">${recalls.map((r) => `<li>${esc(r.text)} <span class="small muted">· ${esc(r.day.slice(5).replace("-", "/"))} · ${r.grade === "good" ? "기억났음" : "가물가물"}</span></li>`).join("")}</ul></div>` : ""}</div>`;
   }
 
   function drawCards() {
@@ -111,7 +115,7 @@ export async function render(root, { args, alive }) {
   }
 
   async function save() {
-    clearTimeout(timer);
+    clearTimeout(saveTimer);
     if (!dirty || saving || conflict) return;
     saving = true;
     dirty = false;
@@ -136,14 +140,14 @@ export async function render(root, { args, alive }) {
     } finally {
       saving = false;
       // 저장 도중에 더 입력했다면 이어서 저장한다. 화면을 떠난 뒤라면 기다리지 않고 바로.
-      if (dirty && !conflict) alive() ? (timer = setTimeout(save, AUTOSAVE_MS)) : save();
+      if (dirty && !conflict) alive() ? (saveTimer = setTimeout(save, AUTOSAVE_MS)) : save();
     }
   }
 
   async function reload(announce) {
     const data = await api(`/api/papers/${id}`);
     if (!alive()) return;
-    ({ paper, note, cards, links } = data);
+    ({ paper, note, cards, links, recalls } = data);
     content = note.content; mtime = note.mtime; exists = note.exists;
     dirty = false; conflict = false;
     extra.innerHTML = "";
@@ -157,6 +161,49 @@ export async function render(root, { args, alive }) {
   drawNote();
   drawCards();
   drawLinks();
+
+  // 읽기 타이머: 서버에 30초마다 신호를 보내고, 신호가 끊기면 서버가 마지막 신호까지만 센다
+  let tick = null;
+  let beat = null;
+  let shownSince = Date.now();
+  const drawTimer = () => {
+    const live = timer.running ? timer.session_seconds + Math.floor((Date.now() - shownSince) / 1000) : 0;
+    const clock = `${Math.floor(live / 60)}:${String(live % 60).padStart(2, "0")}`;
+    $("#timer-btn", root).textContent = timer.running ? `읽기 멈춤 · ${clock}` : "읽기 시작";
+    $("#timer-btn", root).classList.toggle("primary", timer.running);
+    const total = timer.seconds + (timer.running ? Math.floor((Date.now() - shownSince) / 1000) : 0);
+    $("#timer-total", root).textContent = total ? `읽은 시간 ${duration(total)}` : "";
+  };
+  const timerCall = async (action, keepalive = false) => {
+    const res = await fetch(`/api/papers/${id}/timer`, { method: "POST", keepalive, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }) });
+    if (!res.ok) throw new Error("타이머를 바꾸지 못했어요.");
+    timer = await res.json();
+    shownSince = Date.now();
+  };
+  const runClock = () => {
+    clearInterval(tick); clearInterval(beat);
+    if (!timer.running) return;
+    tick = setInterval(drawTimer, 1000);
+    beat = setInterval(() => timerCall("ping").then(() => { if (alive()) { runClock(); drawTimer(); } }).catch(() => {}), 30000);
+  };
+  drawTimer();
+  runClock();
+  $("#timer-btn", root).addEventListener("click", async () => {
+    try {
+      const starting = !timer.running;
+      await timerCall(starting ? "start" : "stop");
+      if (starting && paper.status === "to_read") {
+        paper.status = "reading";
+        $("#status-slot", root).innerHTML = statusSelect(paper);
+      }
+      runClock();
+      drawTimer();
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  });
+  const stopOnHide = () => { if (timer.running) timerCall("stop", true).catch(() => {}); };
+  window.addEventListener("pagehide", stopOnHide);
 
   // 카드 수정·삭제는 서버가 노트 파일의 Q/A 줄을 고친다. 편집기에 저장 안 된 내용이 있으면 먼저 저장한다.
   const cardsBox = $("#cards-card", root);
@@ -248,8 +295,8 @@ export async function render(root, { args, alive }) {
     $("#preview", root).innerHTML = md(content);
     if (conflict) return;
     setState("수정 중…");
-    clearTimeout(timer);
-    timer = setTimeout(save, AUTOSAVE_MS);
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(save, AUTOSAVE_MS);
   });
   body.addEventListener("keydown", (e) => {
     if (e.target.id !== "editor") return;
@@ -355,7 +402,7 @@ export async function render(root, { args, alive }) {
     });
     if (!ok) return;
     try {
-      clearTimeout(timer);
+      clearTimeout(saveTimer);
       dirty = false;
       await api(`/api/papers/${id}`, { method: "DELETE" });
       toast("삭제했어요.");
@@ -381,7 +428,11 @@ export async function render(root, { args, alive }) {
 
   return () => {
     clearInterval(poll);
-    clearTimeout(timer);
+    clearInterval(tick);
+    clearInterval(beat);
+    clearTimeout(saveTimer);
+    window.removeEventListener("pagehide", stopOnHide);
+    stopOnHide();
     if (dirty && !conflict) save();
   };
 }
