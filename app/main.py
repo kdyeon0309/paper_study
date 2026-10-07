@@ -418,7 +418,8 @@ def about():
         "version": VERSION,
         "home": str(config.HOME),
         "files": {"db": config.DB_PATH.name, "notes": config.NOTES_DIR.name, "surveys": config.SURVEYS_DIR.name,
-                  "tracks": config.USER_ROADMAP_FILE.name},
+                  "tracks": config.USER_ROADMAP_FILE.name, "backups": db.backup_dir().name},
+        "backups": sorted(p.name for p in db.backup_dir().glob("papers-*.db")),
         "counts": {"papers": len(db.list_papers()), "surveys": len(notes.list_surveys()),
                    "tracks": len(tracks.user_tracks()), "searches": len(db.saved_searches())},
     }
@@ -453,6 +454,14 @@ def review_weak():
     return {"cards": db.weak_cards(), "tags": db.tag_accuracy()}
 
 
+@app.post("/api/review/undo")
+def review_undo():
+    card = db.undo_review()
+    if not card:
+        raise HTTPException(404, "되돌릴 평가가 없어요.")
+    return card
+
+
 @app.post("/api/review/{card_id}")
 def review_grade(card_id: int, body: Grade):
     card = db.grade_card(card_id, body.grade)
@@ -471,6 +480,12 @@ def stats():
     result["note_requests"] = sum(bool(p["note_requested"]) for p in papers)
     result["recalls_due"] = len(db.due_recalls())
     return result
+
+
+@app.get("/api/monthly")
+def monthly():
+    notes.sync_all()
+    return db.monthly()
 
 
 @app.get("/api/weekly")
