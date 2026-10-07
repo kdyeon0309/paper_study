@@ -61,6 +61,16 @@ class SavedSearch(BaseModel):
     cat: str = Field(default="", max_length=20)
 
 
+class CardEdit(BaseModel):
+    question: str = Field(min_length=1, max_length=500)
+    answer: str = Field(min_length=1, max_length=5000)
+
+
+class Goals(BaseModel):
+    goal_days: int = Field(ge=0, le=7)
+    goal_papers: int = Field(ge=0, le=50)
+
+
 class TrackCreate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     kind: Literal["기초", "논문", "새 영역"] = "논문"
@@ -133,9 +143,43 @@ def searches_list():
     return db.saved_searches()
 
 
+def _newest(q: str, cat: str) -> tuple[list[dict], bool]:
+    result = arxiv.search(q, "recent", cat)
+    return result["items"], result["cached"]
+
+
 @app.post("/api/searches")
 def searches_save(body: SavedSearch):
-    return db.save_search(body.q, body.cat)
+    """Save a search. What is on arXiv right now counts as already seen."""
+    try:
+        items, _ = _newest(body.q, body.cat)
+    except arxiv.ArxivError:
+        items = []  # 기준점은 첫 확인 때 잡는다
+    return db.save_search(body.q, body.cat, max((i["published_at"] for i in items), default=""))
+
+
+@app.get("/api/searches/{search_id}/new")
+def searches_new(search_id: int):
+    """How many papers appeared for this search since it was last looked at."""
+    saved = db.get_search(search_id)
+    if not saved:
+        raise HTTPException(404, "저장한 검색을 찾을 수 없어요.")
+    items, cached = _newest(saved["q"], saved["cat"])
+    if not saved["last_seen_at"]:
+        db.mark_search_seen(search_id, max((i["published_at"] for i in items), default=""))
+        return {"new": 0, "more": False, "cached": cached}
+    fresh = [i for i in items if i["published_at"] > saved["last_seen_at"]]
+    return {"new": len(fresh), "more": bool(items) and len(fresh) == len(items), "cached": cached}
+
+
+@app.post("/api/searches/{search_id}/seen")
+def searches_seen(search_id: int):
+    saved = db.get_search(search_id)
+    if not saved:
+        raise HTTPException(404, "저장한 검색을 찾을 수 없어요.")
+    items, _ = _newest(saved["q"], saved["cat"])
+    db.mark_search_seen(search_id, max((i["published_at"] for i in items), default=""))
+    return {"ok": True}
 
 
 @app.delete("/api/searches/{search_id}")
@@ -204,6 +248,7 @@ def papers_get(paper_id: int):
     return {
         "paper": _decorate(paper),
         "tracks": _tracks_of(paper),
+        "links": notes.links(paper),
         "note": notes.read(paper),
         "cards": db.cards_for(paper_id),
         "bibtex": exporter.bibtex(paper),
@@ -245,7 +290,44 @@ def note_write(paper_id: int, body: NoteWrite):
         note = notes.write(paper, body.content, body.base_mtime)
     except notes.Conflict:
         raise HTTPException(409, "노트 파일이 다른 곳에서 바뀌었어요. 다시 불러온 뒤 수정해주세요.")
-    return {"note": note, "cards": db.cards_for(paper_id)}
+    return {"note": note, "cards": db.cards_for(paper_id), "links": notes.links(paper)}
+
+
+def _rewrite_card(card_id: int, question: str | None, answer: str | None) -> dict:
+    """Edit or remove a card by rewriting its Q/A lines in the note, which stays the single source."""
+    card = db.get_card(card_id)
+    if not card:
+        raise HTTPException(404, "카드를 찾을 수 없어요.")
+    paper = _paper_or_404(card["paper_id"])
+    note = notes.read(paper)
+    try:
+        text = notes.replace_card(note["content"], card["question"], question, answer)
+    except KeyError:
+        raise HTTPException(409, "노트에서 이 카드를 찾지 못했어요. 노트가 바뀌었을 수 있으니 새로고침해주세요.")
+    if question is not None:
+        db.rename_card(card_id, question, answer)
+    notes.write(paper, text, note["mtime"])
+    return {"cards": db.cards_for(paper["id"]), "card": db.get_card(card_id)}
+
+
+@app.patch("/api/cards/{card_id}")
+def cards_edit(card_id: int, body: CardEdit):
+    return _rewrite_card(card_id, *notes.clean_card(body.question, body.answer))
+
+
+@app.delete("/api/cards/{card_id}")
+def cards_delete(card_id: int):
+    return _rewrite_card(card_id, None, None)
+
+
+@app.get("/api/goals")
+def goals_get():
+    return db.goals()
+
+
+@app.put("/api/goals")
+def goals_set(body: Goals):
+    return db.set_goals(body.goal_days, body.goal_papers)
 
 
 @app.get("/api/note-template", response_class=PlainTextResponse)
@@ -389,4 +471,16 @@ def index():
     return FileResponse(config.STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"})
 
 
-app.mount("/static", StaticFiles(directory=config.STATIC_DIR), name="static")
+class FreshStatic(StaticFiles):
+    """Static files the browser must revalidate before reuse.
+
+    Without this, a browser keeps running the JS modules it cached before an update. ETags keep the check cheap (304).
+    """
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
+app.mount("/static", FreshStatic(directory=config.STATIC_DIR), name="static")
