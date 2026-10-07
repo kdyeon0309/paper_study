@@ -435,3 +435,5 @@ a.tab:hover { text-decoration: none; }
 .map-svg.focusing .map-node.near text { fill: var(--text); font-weight: 600; }
 .map-legend { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; padding: 10px 14px; border-top: 1px solid var(--border); font-size: 13px; color: var(--text-2); }
 .map-legend svg { vertical-align: -3px; margin-right: 5px; }
+.map-svg.dense .map-node text { display: none; }
+.map-svg.dense.focusing .map-node.near text { display: block; }

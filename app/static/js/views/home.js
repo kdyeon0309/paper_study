@@ -1,4 +1,4 @@
-import { api, esc, toast, copy, checkSavedSearches, STATUS } from "../util.js";
+import { api, esc, toast, copy, checkSavedSearches, duration, STATUS } from "../util.js";
 
 const DAY = ["일", "월", "화", "수", "목", "금", "토"];
 const pad = (n) => String(n).padStart(2, "0");
@@ -43,7 +43,7 @@ function weeklyCard(box) {
     const list = (title, items) => (items.length ? `\n### ${title}\n${items.map((p) => `- ${p.title}`).join("\n")}\n` : "");
     const g = week.goals;
     const goal = (value, target, unit) => (target ? ` (목표 ${target}${unit}${value >= target ? " 달성" : ""})` : "");
-    return `## 주간 회고 (${md(week.start)} – ${md(week.end)})\n\n- 공부한 날: ${c.active_days}일${goal(c.active_days, g.goal_days, "일")}\n- 완독: ${c.finished}편${goal(c.finished, g.goal_papers, "편")}\n- 노트 쓴 논문: ${c.notes}편\n- 복습한 카드: ${c.reviews}장${acc}\n${list("완독한 논문", week.finished)}${list("노트를 쓴 논문", week.noted)}`;
+    return `## 주간 회고 (${md(week.start)} – ${md(week.end)})\n\n- 공부한 날: ${c.active_days}일${goal(c.active_days, g.goal_days, "일")}\n- 완독: ${c.finished}편${goal(c.finished, g.goal_papers, "편")}\n- 노트 쓴 논문: ${c.notes}편\n- 읽은 시간: ${duration(c.minutes * 60)}\n- 복습한 카드: ${c.reviews}장${acc}\n${list("완독한 논문", week.finished)}${list("노트를 쓴 논문", week.noted)}`;
   };
 
   const draw = () => {
@@ -56,6 +56,7 @@ function weeklyCard(box) {
       ["공부한 날", c.active_days, "일", diff(c.active_days, p.active_days, "일")],
       ["완독", c.finished, "편", diff(c.finished, p.finished, "편")],
       ["노트 쓴 논문", c.notes, "편", diff(c.notes, p.notes, "편")],
+      ["읽은 시간", duration(c.minutes * 60), "", diff(c.minutes, p.minutes, "분")],
       ["복습한 카드", c.reviews, "장", diff(c.reviews, p.reviews, "장")],
       ["복습 정답률", c.accuracy === null ? "–" : pct(c.accuracy), c.accuracy === null ? "" : "%", accuracyNote],
     ];
@@ -130,6 +131,8 @@ function activityText(a) {
   if (a.kind === "status") return `상태: ${STATUS[a.detail] || a.detail}`;
   if (a.kind === "note") return "노트 작성";
   if (a.kind === "review") return "카드 복습";
+  if (a.kind === "read") return "읽기";
+  if (a.kind === "recall") return a.detail === "good" ? "회상: 기억났음" : "회상: 가물가물";
   return a.kind;
 }
 
@@ -159,6 +162,9 @@ export async function render(root) {
   const todos = [];
   if (stats.cards_due) {
     todos.push(`<div class="todo"><div class="grow"><div>복습 카드 ${stats.cards_due}장</div><div class="small muted">오늘 다시 볼 차례예요</div></div><a class="btn primary sm" href="#/review">복습 시작</a></div>`);
+  }
+  if (stats.recalls_due) {
+    todos.push(`<div class="todo"><div class="grow"><div>다시 요약해볼 논문 ${stats.recalls_due}편</div><div class="small muted">완독한 지 시간이 지났어요. 기억만으로 한 문장</div></div><a class="btn sm" href="#/review?tab=recall">회상하기</a></div>`);
   }
   for (const p of reading) {
     todos.push(`<div class="todo"><div class="grow"><div>${esc(p.title)}</div><div class="small muted">읽는 중${p.has_note ? "" : " · 노트 없음"}</div></div><a class="btn sm" href="#/paper/${p.id}">이어 읽기</a></div>`);

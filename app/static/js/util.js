@@ -84,6 +84,13 @@ export function authorsShort(authors, max = 3) {
   return list.length > max ? `${list.slice(0, max).join(", ")} 외 ${list.length - max}명` : list.join(", ");
 }
 
+/** 3725 -> "1시간 2분", 240 -> "4분", 20 -> "1분 미만" */
+export function duration(seconds) {
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 1) return seconds > 0 ? "1분 미만" : "0분";
+  return minutes >= 60 ? `${Math.floor(minutes / 60)}시간 ${minutes % 60}분` : `${minutes}분`;
+}
+
 export const tagsOf = (paper) => String(paper.tags || "").split(",").map((s) => s.trim()).filter(Boolean);
 
 export function statusSelect(paper) {

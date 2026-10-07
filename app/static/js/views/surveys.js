@@ -1,10 +1,27 @@
-import { api, esc, toast, copy, renderMarkdown, surveyPrompt, slugify, background, $ } from "../util.js";
+import { api, esc, toast, copy, renderMarkdown, surveyPrompt, slugify, background, STATUS, $ } from "../util.js";
 
 async function detail(root, name) {
-  const content = await api(`/api/surveys/${encodeURIComponent(name)}`);
+  const path = `/api/surveys/${encodeURIComponent(name)}`;
+  const [content, links] = await Promise.all([api(path), api(`${path}/links`)]);
+  const papers = links.papers.map((p) => `<li><a href="#/paper/${p.id}">${esc(p.title)}</a> <span class="chip ${esc(p.status)}">${STATUS[p.status]}</span></li>`).join("");
   root.innerHTML = `<div class="page"><a class="crumb" href="#/surveys">← 서베이</a>
-    <div class="card"><div class="md">${renderMarkdown(content)}</div></div>
+    <div class="card"><div class="md">${renderMarkdown(content, { wiki: links.wiki })}</div></div>
+    ${links.papers.length || links.missing.length ? `<div class="card"><h2>이 서베이에 나온 논문</h2>
+      ${links.papers.length ? `<ul style="margin:10px 0 0;padding-left:18px">${papers}</ul>` : ""}
+      ${links.missing.length ? `<div class="row" style="margin-top:12px"><span class="muted">아직 라이브러리에 없는 arXiv 논문 ${links.missing.length}편</span>
+        <button class="btn sm" id="add-missing">모두 라이브러리에 추가</button></div>` : ""}</div>` : ""}
     <p class="small muted" style="margin-top:10px">surveys/${esc(name)}.md</p></div>`;
+  $("#add-missing", root)?.addEventListener("click", async (e) => {
+    e.target.disabled = true;
+    e.target.textContent = "추가하는 중…";
+    try {
+      const result = await api("/api/papers/arxiv", { method: "POST", body: { ids: links.missing } });
+      toast(result.failed.length ? `${result.added.length}편 추가, ${result.failed.length}편은 arXiv에서 찾지 못했어요.` : `${result.added.length}편을 라이브러리에 추가했어요.`);
+    } catch (err) {
+      toast(err.message, "error");
+    }
+    if (root.isConnected) detail(root, name);
+  });
 }
 
 export async function render(root, { args }) {
