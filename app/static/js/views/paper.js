@@ -63,7 +63,8 @@ export async function render(root, { args, alive }) {
     $("#edit-btn", root).textContent = editing ? "편집 마치기" : exists || content ? "편집" : "직접 쓰기";
     if (editing) {
       body.innerHTML = `<div class="note-area" style="margin-top:12px">
-        <textarea class="note-editor" id="editor" spellcheck="false" aria-label="노트 편집 (마크다운)"></textarea>
+        <div class="editor-wrap"><textarea class="note-editor" id="editor" spellcheck="false" aria-label="노트 편집 (마크다운)"></textarea>
+          <div class="suggest hidden" id="suggest" role="listbox" aria-label="논문 링크 제안"></div></div>
         <div class="note-preview md" id="preview"></div></div>`;
       $("#editor", root).value = content;
       $("#preview", root).innerHTML = md(content);
@@ -86,18 +87,20 @@ export async function render(root, { args, alive }) {
 
   function drawCards() {
     const card = $("#cards-card", root);
-    if (!cards.length) {
-      card.innerHTML = `<h2>복습 카드</h2><p class="muted" style="margin-top:6px">노트에 <code>Q: 질문</code>을 쓰고 바로 다음 줄에 <code>A: 답</code>을 쓰면 복습 카드가 돼요.</p>`;
-      return;
-    }
-    card.innerHTML = `<div class="card-head"><h2>복습 카드 ${cards.length}장</h2><a class="btn sm" href="#/review">복습하러 가기</a></div>
-      ${cards.map((c) => (c.id === editingCard
-        ? `<div style="padding:12px 0;border-top:1px solid var(--border)">${cardForm(c)}</div>`
-        : `<details style="padding:8px 0;border-top:1px solid var(--border)">
+    const adding = editingCard === "new";
+    const row = (c) => (c.id === editingCard
+      ? `<div style="padding:12px 0;border-top:1px solid var(--border)">${cardForm(c)}</div>`
+      : `<details style="padding:8px 0;border-top:1px solid var(--border)">
         <summary style="cursor:pointer">${esc(c.question)} <span class="small muted">· 다음 복습 ${esc(c.due.slice(5).replace("-", "/"))}${c.reviews ? ` · ${c.reviews}번 복습` : ""}</span></summary>
         <div class="md" style="margin-top:8px">${md(c.answer)}</div>
         <div class="row" style="margin-top:8px"><button class="btn sm" data-card-edit="${c.id}">수정</button>
-          <button class="btn sm ghost danger" data-card-delete="${c.id}">카드 삭제</button></div></details>`)).join("")}`;
+          <button class="btn sm ghost danger" data-card-delete="${c.id}">카드 삭제</button></div></details>`);
+    card.innerHTML = `<div class="card-head"><h2>복습 카드${cards.length ? ` ${cards.length}장` : ""}</h2>
+        <div class="row">${adding ? "" : `<button class="btn sm" id="card-add">카드 추가</button>`}
+          ${cards.length ? `<a class="btn sm" href="#/review">복습하러 가기</a>` : ""}</div></div>
+      ${adding ? `<div style="padding:12px 0;border-top:1px solid var(--border)">${cardForm({ id: "new", question: "", answer: "" }, id)}</div>` : ""}
+      ${cards.map(row).join("")}
+      ${cards.length || adding ? "" : `<p class="muted">'카드 추가'로 바로 만들거나, 노트에 <code>Q: 질문</code>을 쓰고 바로 다음 줄에 <code>A: 답</code>을 쓰면 복습 카드가 돼요.</p>`}`;
   }
 
   function showConflict() {
@@ -120,7 +123,12 @@ export async function render(root, { args, alive }) {
       cards = result.cards;
       links = result.links;
       paper.note_requested = 0;
-      if (alive()) { setState("저장됨"); drawCards(); drawLinks(); refreshDueBadge(); }
+      if (alive()) {
+        setState("저장됨"); drawCards(); drawLinks(); refreshDueBadge();
+        // 방금 쓴 [[링크]]가 어느 논문인지는 저장 응답으로 알게 되므로 미리보기를 한 번 더 그린다
+        const preview = $("#preview", root);
+        if (preview) preview.innerHTML = md(content);
+      }
     } catch (err) {
       dirty = true;
       if (err.status === 409) { conflict = true; if (alive()) showConflict(); }
@@ -154,8 +162,8 @@ export async function render(root, { args, alive }) {
   const cardsBox = $("#cards-card", root);
   cardsBox.addEventListener("click", async (e) => {
     const t = e.target;
-    if (t.dataset.cardEdit) {
-      editingCard = Number(t.dataset.cardEdit);
+    if (t.id === "card-add" || t.dataset.cardEdit) {
+      editingCard = t.id === "card-add" ? "new" : Number(t.dataset.cardEdit);
       drawCards();
       $(".card-edit input", root)?.focus();
     } else if ("cardCancel" in t.dataset) {
@@ -179,16 +187,62 @@ export async function render(root, { args, alive }) {
     e.preventDefault();
     try {
       if (dirty) await save();
+      const created = e.target.dataset.card === "new";
       await submitCardForm(e.target);
       editingCard = null;
-      await reload("카드를 고쳤어요.");
+      await reload(created ? "카드를 추가했어요." : "카드를 고쳤어요.");
+      refreshDueBadge();
     } catch (err) {
       toast(err.message, "error");
     }
   });
 
+  // [[ 를 치면 라이브러리 논문을 제안하고, 고르면 [[arXiv ID]] 가 들어간다
+  let library = null;
+  let suggestions = [];
+  let picked = 0;
+  const closeSuggest = () => { suggestions = []; $("#suggest", root)?.classList.add("hidden"); };
+  const openQuery = (editor) => /\[\[([^\[\]\n]{0,60})$/.exec(editor.value.slice(0, editor.selectionStart));
+  const drawSuggest = () => {
+    const box = $("#suggest", root);
+    if (!box) return;
+    box.classList.toggle("hidden", !suggestions.length);
+    box.innerHTML = suggestions.map((p, i) => `<button type="button" role="option" aria-selected="${i === picked}" data-pick="${i}">
+      <span>${esc(p.title)}</span><span class="small muted">${esc(p.arxiv_id || p.slug)}</span></button>`).join("")
+      + (suggestions.length ? `<div class="small muted" style="padding:4px 10px">↑↓ 이동 · Enter 선택 · Esc 닫기</div>` : "");
+  };
+  const updateSuggest = async (editor) => {
+    const m = openQuery(editor);
+    if (!m) return closeSuggest();
+    library ??= await api("/api/papers").catch(() => []);
+    if (!alive() || !openQuery(editor)) return closeSuggest();
+    const q = m[1].trim().toLowerCase();
+    suggestions = library.filter((p) => p.id !== id && `${p.title} ${p.arxiv_id || ""} ${p.slug}`.toLowerCase().includes(q)).slice(0, 6);
+    picked = 0;
+    drawSuggest();
+  };
+  const pick = (editor, paperToLink) => {
+    const m = openQuery(editor);
+    if (!m || !paperToLink) return;
+    const start = editor.selectionStart - m[0].length;
+    const end = editor.selectionStart + (editor.value.startsWith("]]", editor.selectionStart) ? 2 : 0);
+    editor.setRangeText(`[[${paperToLink.arxiv_id || paperToLink.slug}]]`, start, end, "end");
+    closeSuggest();
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+    editor.focus();
+  };
+  body.addEventListener("mousedown", (e) => {
+    const option = e.target.closest("[data-pick]");
+    if (!option) return;
+    e.preventDefault();  // 편집기 포커스를 잃지 않게
+    pick($("#editor", root), suggestions[Number(option.dataset.pick)]);
+  });
+  body.addEventListener("click", (e) => { if (e.target.id === "editor") updateSuggest(e.target); });
+  body.addEventListener("focusout", (e) => { if (e.target.id === "editor") setTimeout(closeSuggest, 150); });
+
   body.addEventListener("input", (e) => {
     if (e.target.id !== "editor") return;
+    updateSuggest(e.target);
     content = e.target.value;
     dirty = true;
     $("#preview", root).innerHTML = md(content);
@@ -198,7 +252,17 @@ export async function render(root, { args, alive }) {
     timer = setTimeout(save, AUTOSAVE_MS);
   });
   body.addEventListener("keydown", (e) => {
-    if (e.target.id !== "editor" || e.key !== "Tab" || e.shiftKey) return;
+    if (e.target.id !== "editor") return;
+    if (suggestions.length) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        picked = (picked + (e.key === "ArrowDown" ? 1 : suggestions.length - 1)) % suggestions.length;
+        return drawSuggest();
+      }
+      if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); return pick(e.target, suggestions[picked]); }
+      if (e.key === "Escape") { e.preventDefault(); return closeSuggest(); }
+    }
+    if (e.key !== "Tab" || e.shiftKey) return;
     e.preventDefault();
     e.target.setRangeText("  ", e.target.selectionStart, e.target.selectionEnd, "end");
     e.target.dispatchEvent(new Event("input", { bubbles: true }));
