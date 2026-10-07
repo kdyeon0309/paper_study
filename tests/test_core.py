@@ -348,7 +348,7 @@ class InsightTest(TempHome):
             conn.execute("UPDATE papers SET status='done', finished_at='2026-10-06' WHERE id=?", (p["id"],))
         week = db.weekly(wednesday)
         self.assertEqual((week["start"], week["end"]), ("2026-10-05", "2026-10-11"))
-        self.assertEqual(week["current"], {"added": 1, "finished": 1, "notes": 1, "reviews": 2, "accuracy": 0.5, "active_days": 2})
+        self.assertEqual(week["current"], {"added": 1, "finished": 1, "notes": 1, "reviews": 2, "accuracy": 0.5, "active_days": 2, "minutes": 0})
         self.assertEqual(week["previous"]["reviews"], 1, "Sunday the 4th belongs to the previous week")
         self.assertEqual(week["previous"]["added"], 1)
         self.assertEqual([d["count"] for d in week["days"]], [2, 0, 2, 0, 0, 0, 0])
@@ -495,7 +495,7 @@ class LinkTest(TempHome):
                                        "2111.14330": {"id": detr["id"], "title": "Sparse DETR"}})
         self.assertEqual([x["id"] for x in got["back"]], [vit["id"]])
         self.assertEqual([x["id"] for x in notes.links(db.get_paper(vit["id"]))["back"]], [detr["id"]])
-        self.assertEqual(notes.links(db.get_paper(lonely["id"])), {"wiki": {}, "out": [], "back": []})
+        self.assertEqual(notes.links(db.get_paper(lonely["id"])), {"wiki": {}, "out": [], "back": [], "surveys": []})
 
         g = notes.graph()
         self.assertEqual({n["id"] for n in g["nodes"]}, {detr["id"], vit["id"], book["id"]})
@@ -554,6 +554,88 @@ class GoalTest(TempHome):
         db.mark_search_seen(saved["id"], "2026-10-05T00:00:00Z")
         self.assertEqual(db.get_search(saved["id"])["last_seen_at"], "2026-10-05T00:00:00Z")
         self.assertIsNone(db.get_search(999))
+
+
+class TimerTest(TempHome):
+    def test_reading_time_counts_only_while_the_page_reports(self):
+        from datetime import datetime
+        p = self.paper()
+        other = db.add_paper({"title": "Other"})[0]
+        t0 = datetime(2026, 10, 7, 21, 0, 0)
+        at = lambda seconds: t0 + timedelta(seconds=seconds)
+
+        self.assertEqual(db.timer(p["id"], "ping", t0), {"running": False, "seconds": 0, "session_seconds": 0}, "ping without start does nothing")
+        self.assertTrue(db.timer(p["id"], "start", t0)["running"])
+        self.assertEqual(db.get_paper(p["id"])["status"], "reading", "starting to read moves it out of to_read")
+        db.timer(p["id"], "ping", at(60))
+        self.assertEqual(db.timer(p["id"], "ping", at(100))["seconds"], 100)
+        self.assertEqual(db.timer(p["id"], "start", at(110))["session_seconds"], 110, "start while running continues the same session")
+
+        # 탭을 닫아 신호가 끊기면, 마지막 신호까지만 센다
+        state = db.timer(p["id"], "ping", at(110 + db.SESSION_GAP + 500))
+        self.assertEqual(state, {"running": False, "seconds": 110, "session_seconds": 0})
+
+        db.timer(p["id"], "start", at(2000))
+        db.timer(other["id"], "start", at(2030))
+        self.assertFalse(db.timer_state(p["id"])["running"], "only one paper is timed at a time")
+        self.assertEqual(db.timer(other["id"], "stop", at(2090)), {"running": False, "seconds": 60, "session_seconds": 0})
+        self.assertEqual(db.timer_state(p["id"])["seconds"], 110, "a session cut off by another paper counts up to its last report")
+        self.assertEqual(db.weekly(date(2026, 10, 7))["current"]["minutes"], 2)
+        with self.assertRaises(ValueError):
+            db.timer(p["id"], "pause", t0)
+
+
+class RecallTest(TempHome):
+    def test_finished_papers_come_back_for_recall(self):
+        today = date.today()
+        p = self.paper()
+        self.assertEqual(db.due_recalls(today + timedelta(days=99)), [])
+        db.update_paper(p["id"], {"status": "done"})
+        self.assertEqual(db.due_recalls(today + timedelta(days=db.RECALL_FIRST - 1)), [])
+        due = today + timedelta(days=db.RECALL_FIRST)
+        self.assertEqual([x["id"] for x in db.due_recalls(due)], [p["id"]])
+
+        self.assertEqual(db.record_recall(p["id"], " encoder 토큰 일부만 갱신 ", "hazy", due)["next"],
+                         (due + timedelta(days=db.RECALL_HAZY)).isoformat())
+        self.assertEqual(db.due_recalls(due), [])
+        later = due + timedelta(days=db.RECALL_HAZY)
+        db.record_recall(p["id"], "더 잘 기억남", "good", later)
+        self.assertEqual(db.get_paper(p["id"])["recall_due"], (later + timedelta(days=db.RECALL_GOOD)).isoformat())
+        self.assertEqual([(r["text"], r["grade"]) for r in db.recalls_for(p["id"])],
+                         [("더 잘 기억남", "good"), ("encoder 토큰 일부만 갱신", "hazy")])
+        for text, grade in (("  ", "good"), ("x", "perfect")):
+            with self.assertRaises(ValueError):
+                db.record_recall(p["id"], text, grade)
+
+        db.update_paper(p["id"], {"status": "reading"})
+        self.assertIsNone(db.get_paper(p["id"])["recall_due"], "a paper being re-read is not asked about")
+
+    def test_summary_line(self):
+        p = self.paper()
+        self.assertEqual(notes.summary_line(p), "")
+        notes.write(p, "# 제목\n\n> **한 문장 요약:** 토큰 일부만 갱신한다.\n\n> 다른 인용\n", None)
+        self.assertEqual(notes.summary_line(db.get_paper(p["id"])), "토큰 일부만 갱신한다.")
+
+    def test_already_finished_papers_get_a_recall_date_on_upgrade(self):
+        p = self.paper()
+        with db.connect() as conn:
+            conn.execute("UPDATE papers SET status='done', finished_at='2026-09-01', recall_due=NULL WHERE id=?", (p["id"],))
+        db.init()
+        self.assertEqual(db.get_paper(p["id"])["recall_due"], "2026-09-08")
+
+
+class SurveyLinkTest(TempHome):
+    def test_survey_links(self):
+        detr = self.paper()
+        config.SURVEYS_DIR.mkdir()
+        (config.SURVEYS_DIR / "detr-family.md").write_text(
+            "# DETR 계보\n\n출발점 [[2111.14330]]. 다음: https://arxiv.org/abs/2010.04159 , arXiv:2304.08069\n", encoding="utf-8")
+        found = notes.survey_links("detr-family")
+        self.assertEqual(found["papers"], [{"id": detr["id"], "title": "Sparse DETR", "status": "to_read"}])
+        self.assertEqual(found["wiki"], {"2111.14330": {"id": detr["id"], "title": "Sparse DETR"}})
+        self.assertEqual(found["missing"], ["2010.04159", "2304.08069"])
+        self.assertEqual(notes.links(detr)["surveys"], [{"name": "detr-family", "title": "DETR 계보"}])
+        self.assertIsNone(notes.survey_links("nope"))
 
 
 class RoadmapTest(TempHome):
