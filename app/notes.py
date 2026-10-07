@@ -269,7 +269,50 @@ def links(paper: dict) -> dict:
         elif paper["id"] in linked:
             back.append({"id": other["id"], "title": other["title"]})
     return {
-        "wiki": wiki,
+        "wiki": {inner: {"id": target, "title": titles[target]} for inner, target in wiki.items()},
         "out": sorted(({"id": i, "title": titles[i]} for i in out), key=lambda x: x["title"]),
         "back": sorted(back, key=lambda x: x["title"]),
     }
+
+
+def graph() -> dict:
+    """Every paper that mentions or is mentioned by another, with one edge per mention (from -> to)."""
+    papers = db.list_papers()
+    edges = set()
+    for paper in papers:
+        path = note_path(paper["slug"])
+        if path.exists():
+            _, linked = _targets(path.read_text(encoding="utf-8"), papers)
+            edges.update((paper["id"], target) for target in linked if target != paper["id"])
+    connected = {i for edge in edges for i in edge}
+    return {
+        "nodes": [{"id": p["id"], "title": p["title"], "status": p["status"], "year": p["year"]}
+                  for p in papers if p["id"] in connected],
+        "edges": [{"from": a, "to": b} for a, b in sorted(edges)],
+        "isolated": len(papers) - len(connected),
+    }
+
+
+_CARD_HEADING = re.compile(r"^#{1,6}\s*복습\s*카드")
+
+
+def append_card(text: str, question: str, answer: str, title: str) -> str:
+    """Add a card to a note: inside its '복습 카드' section if there is one, else in a new section at the end."""
+    if any(c["question"] == question for c in scan_cards(text)):
+        raise ValueError("같은 질문의 카드가 이미 있어요.")
+    card = [f"Q: {question}", f"A: {answer}"]
+    lines = text.splitlines()
+    if not text.strip():
+        return "\n".join([f"# {title}", "", "## 복습 카드", *card]) + "\n"
+    start = next((i for i, line in enumerate(lines) if _CARD_HEADING.match(line)), None)
+    if start is None:
+        while lines and not lines[-1].strip():
+            lines.pop()
+        return "\n".join([*lines, "", "## 복습 카드", *card]) + "\n"
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("#")), len(lines))
+    while end > start + 1 and not lines[end - 1].strip():
+        end -= 1
+    gap = [""] if end > start + 1 else []
+    tail = [""] if end < len(lines) and lines[end].strip() else []
+    lines[end:end] = [*gap, *card, *tail]
+    return "\n".join(lines) + "\n"
