@@ -1,4 +1,5 @@
 """SQLite storage: papers, review cards, activity log."""
+import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
@@ -105,9 +106,42 @@ def slug_for(arxiv_id: str | None, paper_id: int) -> str:
     return arxiv_id.replace("/", "_") if arxiv_id else f"local-{paper_id}"
 
 
+BACKUPS_KEPT = 7
+
+
+def backup_dir():
+    # DB 옆에 둔다. DB 위치만 바꾼 경우에도 엉뚱한 폴더에 복사본이 섞이지 않는다.
+    return config.DB_PATH.parent / "backups"
+
+
+def backup(today: date | None = None) -> bool:
+    """Copy the database once a day into backups/, keeping the newest few. Returns True if a copy was made.
+
+    Review progress and the study log live only in this file (notes are plain files in git), so it gets its own safety net.
+    """
+    if not config.DB_PATH.exists() or config.DB_PATH.stat().st_size == 0:
+        return False
+    folder = backup_dir()
+    target = folder / f"papers-{(today or date.today()).isoformat()}.db"
+    if target.exists():
+        return False
+    folder.mkdir(parents=True, exist_ok=True)
+    source = sqlite3.connect(config.DB_PATH)
+    copy = sqlite3.connect(target)
+    try:
+        source.backup(copy)  # 쓰는 중이어도 일관된 복사본을 만든다
+    finally:
+        copy.close()
+        source.close()
+    for old in sorted(folder.glob("papers-*.db"))[:-BACKUPS_KEPT]:
+        old.unlink()
+    return True
+
+
 def init():
     """Create tables and bring a v0.1 database forward without losing rows."""
     config.HOME.mkdir(parents=True, exist_ok=True)
+    backup()  # 구조를 바꾸기 전에 먼저 복사해 둔다
     with connect() as conn:
         conn.execute("CREATE TABLE IF NOT EXISTS papers (id INTEGER PRIMARY KEY AUTOINCREMENT)")
         existing = {r["name"] for r in conn.execute("PRAGMA table_info(papers)")}
@@ -398,6 +432,11 @@ def grade_card(card_id: int, grade: str, today: date | None = None) -> dict | No
             "UPDATE cards SET box=?, due=?, last_reviewed=?, reviews=reviews+1, lapses=lapses+? WHERE id=?",
             (box, due.isoformat(), today.isoformat(), int(grade == "again"), card_id))
         log(conn, "review", row["paper_id"], grade, day=today.isoformat())
+        # 잘못 누른 평가를 한 번 되돌릴 수 있게 직전 상태를 남긴다
+        undo = {k: row[k] for k in ("id", "box", "due", "last_reviewed", "reviews", "lapses")}
+        undo["activity_id"] = conn.execute("SELECT MAX(id) FROM activity").fetchone()[0]
+        conn.execute("INSERT INTO settings (key, value) VALUES ('undo_review', ?) "
+                     "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (json.dumps(undo),))
         return dict(conn.execute("SELECT * FROM cards WHERE id=?", (card_id,)).fetchone())
 
 
@@ -613,3 +652,50 @@ def record_recall(paper_id: int, text: str, grade: str, today: date | None = Non
 def recalls_for(paper_id: int) -> list[dict]:
     with connect() as conn:
         return [dict(r) for r in conn.execute("SELECT day, text, grade FROM recalls WHERE paper_id=? ORDER BY id DESC", (paper_id,))]
+
+
+def undo_review() -> dict | None:
+    """Take back the most recent grade: the card and the study log return to how they were. Works once."""
+    with connect() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key='undo_review'").fetchone()
+        if not row:
+            return None
+        saved = json.loads(row["value"])
+        conn.execute("DELETE FROM settings WHERE key='undo_review'")
+        if not conn.execute("SELECT 1 FROM cards WHERE id=?", (saved["id"],)).fetchone():
+            return None  # 그 사이 카드가 지워졌다
+        conn.execute("UPDATE cards SET box=?, due=?, last_reviewed=?, reviews=?, lapses=? WHERE id=?",
+                     (saved["box"], saved["due"], saved["last_reviewed"], saved["reviews"], saved["lapses"], saved["id"]))
+        conn.execute("DELETE FROM activity WHERE id=? AND kind='review'", (saved["activity_id"],))
+        card = conn.execute(
+            "SELECT c.*, p.title AS paper_title FROM cards c JOIN papers p ON p.id = c.paper_id WHERE c.id=?",
+            (saved["id"],)).fetchone()
+        return dict(card)
+
+
+def monthly(today: date | None = None, months: int = 12) -> list[dict]:
+    """Per-month totals for the last `months` months, oldest first, including months with nothing."""
+    today = today or date.today()
+    keys = []
+    year, month = today.year, today.month
+    for _ in range(months):
+        keys.append(f"{year:04d}-{month:02d}")
+        year, month = (year, month - 1) if month > 1 else (year - 1, 12)
+    keys.reverse()
+    rows = {k: {"month": k, "done": 0, "reviews": 0, "notes": 0, "minutes": 0, "active_days": 0} for k in keys}
+    since = keys[0] + "-01"
+    with connect() as conn:
+        for r in conn.execute("SELECT substr(finished_at, 1, 7) m, COUNT(*) n FROM papers "
+                              "WHERE status='done' AND finished_at >= ? GROUP BY m", (since,)):
+            if r["m"] in rows:
+                rows[r["m"]]["done"] = r["n"]
+        for r in conn.execute(
+                """SELECT substr(day, 1, 7) m, SUM(kind='review') reviews, COUNT(DISTINCT CASE WHEN kind='note' THEN paper_id END) notes,
+                          COUNT(DISTINCT day) days FROM activity WHERE day >= ? GROUP BY m""", (since,)):
+            if r["m"] in rows:
+                rows[r["m"]].update(reviews=r["reviews"] or 0, notes=r["notes"], active_days=r["days"])
+        for r in conn.execute("SELECT substr(started_at, 1, 7) m, SUM(seconds) s FROM reading_sessions "
+                              "WHERE started_at >= ? GROUP BY m", (since,)):
+            if r["m"] in rows:
+                rows[r["m"]]["minutes"] = (r["s"] or 0) // 60
+    return list(rows.values())

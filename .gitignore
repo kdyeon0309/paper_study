@@ -7,6 +7,7 @@ __pycache__/
 # 로컬 데이터
 papers.db
 papers.db-*
+backups/
 
 # 에이전트 관련 파일
 CLAUDE.md
