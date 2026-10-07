@@ -443,3 +443,17 @@ a.tab:hover { text-decoration: none; }
 .skip:focus { transform: none; }
 #view:focus { outline: none; }
 input[type="radio"] { accent-color: var(--accent); }
+
+/* ---------- hero, monthly chart ---------- */
+.hero { display: flex; align-items: center; gap: 16px; border-color: var(--accent); }
+.hero-title { font-size: 19px; font-weight: 650; line-height: 1.35; margin: 2px 0; }
+@media (max-width: 560px) { .hero { flex-direction: column; align-items: stretch; } }
+.chart { display: block; width: 100%; height: auto; max-height: 240px; }
+.chart-grid { stroke: var(--border); stroke-width: 1; }
+.chart-axis { stroke: var(--text-3); stroke-width: 1; }
+.chart-bar { fill: var(--accent); }
+.chart-tick { font-size: 11px; fill: var(--text-3); }
+.chart-value { font-size: 12px; font-weight: 600; fill: var(--text); }
+.chart-hit { fill: transparent; cursor: default; }
+.chart-hit:hover, .chart-hit:focus { fill: var(--text); fill-opacity: .06; outline: none; }
+.activity th { text-align: left; font-weight: 600; color: var(--text-2); padding: 4px 12px 6px 0; }

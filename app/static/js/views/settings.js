@@ -56,7 +56,9 @@ export async function render(root) {
         <a class="btn" href="/api/export.bib" download>BibTeX 받기</a>
         <input type="file" id="import-file" accept="application/json,.json" class="hidden"></div>
       <p class="small muted" style="margin-top:12px">백업에는 논문 목록, 노트, 내 트랙, 저장한 검색이 들어가요. 복습 진도와 학습 기록은 <code>${esc(about.files.db)}</code> 파일에 있어요.<br>
-        저장 위치: <code>${esc(about.home)}</code> (노트는 <code>${esc(about.files.notes)}/</code>, 서베이는 <code>${esc(about.files.surveys)}/</code>)</p></div>
+        저장 위치: <code>${esc(about.home)}</code> (노트는 <code>${esc(about.files.notes)}/</code>, 서베이는 <code>${esc(about.files.surveys)}/</code>)<br>
+        자동 백업: 서버를 켤 때 하루 한 번 <code>${esc(about.files.backups)}/</code> 폴더에 DB를 복사하고 최근 7개를 남겨요.
+        ${about.backups.length ? `지금 ${about.backups.length}개, 가장 최근은 ${esc(about.backups.at(-1).replace(/^papers-|\.db$/g, ""))}.` : "아직 복사본이 없어요."}</p></div>
 
     <div class="card"><h2>단축키</h2><div style="margin-top:8px">${shortcutTable()}</div></div>
   </div>`;

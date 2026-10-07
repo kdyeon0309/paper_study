@@ -126,6 +126,46 @@ function weeklyCard(box) {
   return load();
 }
 
+const METRICS = {
+  done: ["완독", "편"],
+  reviews: ["복습한 카드", "장"],
+  minutes: ["읽은 시간", "분"],
+  active_days: ["공부한 날", "일"],
+};
+
+/** Twelve months of one measure as thin bars. One series, so the card title names it and there is no legend. */
+function monthChart(months, key) {
+  const [name, unit] = METRICS[key];
+  const W = 720, H = 190, L = 34, R = 8, T = 18, B = 24;
+  const values = months.map((m) => m[key]);
+  const top = Math.max(...values, 1);
+  const ceil = top <= 4 ? 4 : Math.ceil(top / 4) * 4;   // 눈금 0, 절반, 끝이 정수로 떨어지게
+  const slot = (W - L - R) / months.length;
+  const bar = Math.min(18, slot * 0.5);
+  const y = (v) => T + (H - T - B) * (1 - v / ceil);
+  const base = y(0);
+  const latest = values.length - 1;
+  const peak = values.indexOf(top);
+  const label = (m) => `${Number(m.month.slice(5))}월`;
+  const grid = [0, ceil / 2, ceil].map((v) => `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" class="chart-grid"/>
+    <text x="${L - 6}" y="${y(v) + 4}" text-anchor="end" class="chart-tick">${v}</text>`).join("");
+  const bars = months.map((m, i) => {
+    const v = m[key];
+    const x = L + slot * i + (slot - bar) / 2;
+    const r = Math.min(4, (base - y(v)) / 2);
+    const shape = v ? `<path class="chart-bar" d="M${x},${base} V${y(v) + r} Q${x},${y(v)} ${x + r},${y(v)} H${x + bar - r} Q${x + bar},${y(v)} ${x + bar},${y(v) + r} V${base} Z"/>` : "";
+    const direct = v && (i === latest || i === peak) ? `<text x="${x + bar / 2}" y="${y(v) - 5}" text-anchor="middle" class="chart-value">${v}</text>` : "";
+    const tip = `${m.month.slice(0, 4)}년 ${label(m)} · ${name} ${v}${unit}`;
+    return `${shape}${direct}<text x="${x + bar / 2}" y="${H - 7}" text-anchor="middle" class="chart-tick">${label(m)}</text>
+      <rect class="chart-hit" x="${L + slot * i}" y="${T}" width="${slot}" height="${H - T - B}" data-tip="${tip}" tabindex="0" role="img" aria-label="${tip}"/>`;
+  }).join("");
+  const rows = months.map((m) => `<tr><td>${m.month.slice(0, 4)}년 ${label(m)}</td><td>${m.done}편</td><td>${m.reviews}장</td><td>${m.minutes}분</td><td>${m.active_days}일</td></tr>`).join("");
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="group" aria-label="최근 12개월 ${name}">${grid}
+      <line x1="${L}" x2="${W - R}" y1="${base}" y2="${base}" class="chart-axis"/>${bars}</svg>
+    <details style="margin-top:8px"><summary class="small muted" style="cursor:pointer">표로 보기</summary>
+      <table class="activity" style="margin-top:8px"><thead><tr><th>월</th><th>완독</th><th>복습</th><th>읽은 시간</th><th>공부한 날</th></tr></thead><tbody>${rows}</tbody></table></details>`;
+}
+
 function activityText(a) {
   if (a.kind === "added") return "라이브러리에 추가";
   if (a.kind === "status") return `상태: ${STATUS[a.detail] || a.detail}`;
@@ -151,7 +191,7 @@ function onboarding() {
 }
 
 export async function render(root) {
-  const [stats, papers, tracks] = await Promise.all([api("/api/stats"), api("/api/papers"), api("/api/roadmaps")]);
+  const [stats, papers, tracks, months] = await Promise.all([api("/api/stats"), api("/api/papers"), api("/api/roadmaps"), api("/api/monthly")]);
   if (!stats.total) {
     root.innerHTML = onboarding();
     return;
@@ -186,6 +226,14 @@ export async function render(root) {
     todos.push(`<div class="todo"><div class="grow"><div>${esc(next.title)}</div><div class="small muted">읽을 예정 목록에서 가장 오래된 논문</div></div><a class="btn sm" href="#/paper/${next.id}">읽기 시작</a></div>`);
   }
 
+  // 맨 위에는 가장 먼저 할 일 하나만 크게 보여준다: 밀린 복습 > 회상 > 읽던 논문 > 로드맵의 다음 논문
+  const hero = stats.cards_due ? ["복습 카드 " + stats.cards_due + "장", "오늘 다시 볼 차례예요. 보통 몇 분이면 끝나요.", "#/review", "복습 시작"]
+    : stats.recalls_due ? [`다시 요약해볼 논문 ${stats.recalls_due}편`, "완독한 논문을 기억만으로 한 문장으로 써봐요.", "#/review?tab=recall", "회상하기"]
+    : reading[0] ? [reading[0].title, reading[0].has_note ? "읽는 중이에요. 이어서 읽어요." : "읽는 중이에요. 아직 노트가 없어요.", `#/paper/${reading[0].id}`, "이어 읽기"]
+    : upNext ? [upNext.paper.title, `'${upNext.track.name}' 트랙의 다음 논문이에요.`, upNext.paper.paper_id ? `#/paper/${upNext.paper.paper_id}` : "#/roadmap", upNext.paper.paper_id ? "읽기 시작" : "로드맵에서 추가"]
+    : next ? [next.title, "읽을 예정 목록에서 가장 오래된 논문이에요.", `#/paper/${next.id}`, "읽기 시작"]
+    : ["다음에 읽을 논문 고르기", "읽을 예정인 논문이 없어요.", "#/roadmap", "로드맵 보기"];
+
   const started = tracks
     .map((t) => ({ ...t, saved: t.papers.filter((p) => p.paper_id).length, done: t.papers.filter((p) => p.status === "done").length }))
     .filter((t) => t.saved);
@@ -204,7 +252,10 @@ export async function render(root) {
       <div class="page-head"><div><h1>오늘의 공부</h1>
         <p>${today.getMonth() + 1}월 ${today.getDate()}일 ${DAY[today.getDay()]}요일</p></div>
         <div class="head-actions"><a class="btn ghost sm" href="#/settings">설정</a></div></div>
-      <div class="tiles">
+      <div class="card hero"><div class="grow"><div class="small muted">지금 할 일</div>
+        <div class="hero-title">${esc(hero[0])}</div><div class="small muted">${esc(hero[1])}</div></div>
+        <a class="btn primary" href="${hero[2]}">${hero[3]}</a></div>
+      <div class="tiles" style="margin-top:12px">
         <div class="tile"><div class="label">연속 학습</div><div class="value">${stats.streak}<small>일</small></div><div class="sub">지금까지 ${stats.active_days}일 공부</div></div>
         <div class="tile"><div class="label">이번 달 완독</div><div class="value">${stats.month_done}<small>편</small></div><div class="sub">전체 완독 ${stats.by_status.done}편</div></div>
         <div class="tile"><div class="label">읽는 중</div><div class="value">${stats.by_status.reading}<small>편</small></div><div class="sub">읽을 예정 ${stats.by_status.to_read}편</div></div>
@@ -223,6 +274,9 @@ export async function render(root) {
         <div class="card"><div class="card-head"><h2>로드맵 진행</h2><a class="small" href="#/roadmap">전체 보기</a></div>
           <div class="stack">${trackRows || `<p class="muted">아직 시작한 트랙이 없어요. <a href="#/roadmap">로드맵</a>에서 트랙을 골라 추가해보세요.</p>`}</div></div>
       </div>
+      <div class="card" style="margin-top:12px"><div class="card-head"><h2 id="chart-title">월별 완독</h2>
+        <div class="tabs" id="chart-tabs">${Object.entries(METRICS).map(([k, [label]]) => `<button class="tab" data-metric="${k}" aria-pressed="${k === "done"}">${label}</button>`).join("")}</div></div>
+        <div id="chart-box">${monthChart(months, "done")}</div></div>
     </div>`;
 
   await weeklyCard(root.querySelector("#weekly"));
@@ -241,6 +295,28 @@ export async function render(root) {
   const tip = document.createElement("div");
   tip.className = "tooltip hidden";
   document.body.appendChild(tip);
+
+  const chartBox = root.querySelector("#chart-box");
+  root.querySelector("#chart-tabs").addEventListener("click", (e) => {
+    const key = e.target.dataset.metric;
+    if (!key) return;
+    root.querySelectorAll("#chart-tabs .tab").forEach((t) => t.setAttribute("aria-pressed", String(t === e.target)));
+    root.querySelector("#chart-title").textContent = `월별 ${METRICS[key][0]}`;
+    chartBox.innerHTML = monthChart(months, key);
+  });
+  const showTip = (e) => {
+    if (!e.target.dataset?.tip || !e.target.classList.contains("chart-hit")) return;
+    const box = e.target.getBoundingClientRect();
+    tip.textContent = e.target.dataset.tip;
+    tip.style.left = `${box.left + box.width / 2}px`;
+    tip.style.top = `${box.top + 10}px`;
+    tip.classList.remove("hidden");
+  };
+  chartBox.addEventListener("mouseover", showTip);
+  chartBox.addEventListener("focusin", showTip);
+  chartBox.addEventListener("mouseout", () => tip.classList.add("hidden"));
+  chartBox.addEventListener("focusout", () => tip.classList.add("hidden"));
+
   const grid = root.querySelector(".heat-grid");
   grid.addEventListener("mouseover", (e) => {
     if (!e.target.dataset.tip) return;
