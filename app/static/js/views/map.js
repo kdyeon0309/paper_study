@@ -1,15 +1,22 @@
-import { api, esc, STATUS, $ } from "../util.js";
+import { api, esc, tagsOf, STATUS, $ } from "../util.js";
 
 const W = 900;
 const H = 560;
 const R = 9;
-const PAD = 40;
+const PAD_X = 90;   // 좌우는 이름표 자리
+const PAD_Y = 36;
+const DENSE = 60;   // 이보다 많으면 이름표는 가리켰을 때만 보인다
 
-const shortTitle = (title) => {
+const state = { tag: "", track: "" };
+
+function shortTitle(title, max) {
   const head = title.split(":")[0].trim();
-  const base = head.length >= 3 && head.length <= 28 ? head : title;
-  return base.length > 28 ? `${base.slice(0, 26)}…` : base;
-};
+  const base = head.length >= 3 && head.length <= max ? head : title;
+  return base.length > max ? `${base.slice(0, max - 2)}…` : base;
+}
+
+const textWidth = (text) => [...text].reduce((w, ch) => w + (ch.charCodeAt(0) < 128 ? 6.1 : 11), 0);
+const overlaps = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 
 /** Fruchterman-Reingold force layout. Starts from a circle, so the same graph always lands the same way. */
 function layout(nodes, edges) {
@@ -20,7 +27,7 @@ function layout(nodes, edges) {
     d.x = W / 2 + Math.cos(a) * H * 0.3;
     d.y = H / 2 + Math.sin(a) * H * 0.3;
   });
-  const k = Math.sqrt(((W - 2 * PAD) * (H - 2 * PAD)) / n) * 0.75;
+  const k = Math.sqrt(((W - 2 * PAD_X) * (H - 2 * PAD_Y)) / Math.max(1, n)) * 0.8;
   const STEPS = 300;
   for (let step = 0; step < STEPS; step++) {
     const temp = (W / 8) * (1 - step / STEPS);
@@ -49,30 +56,47 @@ function layout(nodes, edges) {
     }
     for (const d of nodes) {
       const move = Math.max(1, Math.hypot(d.dx, d.dy));
-      d.x = Math.min(W - PAD * 3, Math.max(PAD, d.x + (d.dx / move) * Math.min(move, temp)));  // 오른쪽은 라벨 자리
-      d.y = Math.min(H - PAD, Math.max(PAD, d.y + (d.dy / move) * Math.min(move, temp)));
+      d.x += (d.dx / move) * Math.min(move, temp);
+      d.y += (d.dy / move) * Math.min(move, temp);
     }
+  }
+  // 벽에 밀어붙이지 않고 자유롭게 퍼뜨린 다음, 전체를 그림 영역에 맞춰 늘리거나 줄인다
+  const xs = nodes.map((d) => d.x);
+  const ys = nodes.map((d) => d.y);
+  const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+  for (const d of nodes) {
+    d.x = x1 > x0 ? PAD_X + ((d.x - x0) / (x1 - x0)) * (W - 2 * PAD_X) : W / 2;
+    d.y = y1 > y0 ? PAD_Y + ((d.y - y0) / (y1 - y0)) * (H - 2 * PAD_Y) : H / 2;
   }
   return byId;
 }
 
-export async function render(root) {
-  const graph = await api("/api/graph");
-  const head = `<a class="crumb" href="#/library">← 라이브러리</a>
-    <div class="page-head"><div><h1>연결 지도</h1><p>노트에서 서로 언급한 논문들이에요. 화살표는 "이 노트가 저 논문을 언급했다"는 뜻이에요.</p></div></div>`;
-
-  if (!graph.edges.length) {
-    root.innerHTML = `<div class="page">${head}<div class="empty"><h3>아직 연결된 논문이 없어요</h3>
-      <p>노트에서 다른 논문을 <code>[[arXiv ID]]</code>로 언급하면 여기에 선으로 이어져요.<br>편집기에서 <code>[[</code>를 치면 라이브러리 논문을 골라 넣을 수 있어요.</p>
-      <div class="row"><a class="btn" href="#/library">라이브러리로</a></div></div></div>`;
-    return;
+/** Put each name on whichever side of its dot collides least with other dots and names already placed. */
+function placeLabels(nodes) {
+  const max = nodes.length > 30 ? 18 : 28;
+  const taken = nodes.map((d) => ({ x: d.x - R - 2, y: d.y - R - 2, w: 2 * R + 4, h: 2 * R + 4 }));
+  for (const d of nodes) {
+    d.label = shortTitle(d.title, max);
+    const w = textWidth(d.label);
+    const options = [
+      { anchor: "start", tx: d.x + R + 5, ty: d.y + 4, x: d.x + R + 5, y: d.y - 7 },
+      { anchor: "end", tx: d.x - R - 5, ty: d.y + 4, x: d.x - R - 5 - w, y: d.y - 7 },
+      { anchor: "middle", tx: d.x, ty: d.y + R + 15, x: d.x - w / 2, y: d.y + R + 4 },
+      { anchor: "middle", tx: d.x, ty: d.y - R - 6, x: d.x - w / 2, y: d.y - R - 18 },
+    ].map((o) => ({ ...o, w, h: 14 }));
+    const cost = (o) => taken.filter((t) => overlaps(o, t)).length + (o.x < 2 || o.x + o.w > W - 2 || o.y < 2 || o.y + o.h > H - 2 ? 2 : 0);
+    d.place = options.reduce((best, o) => (cost(o) < cost(best) ? o : best));
+    taken.push(d.place);
   }
+}
 
-  const byId = layout(graph.nodes, graph.edges);
-  const near = new Map(graph.nodes.map((d) => [d.id, new Set([d.id])]));
-  graph.edges.forEach((e) => { near.get(e.from).add(e.to); near.get(e.to).add(e.from); });
+function drawMap(box, nodes, edges) {
+  const byId = layout(nodes, edges);
+  placeLabels(nodes);
+  const near = new Map(nodes.map((d) => [d.id, new Set([d.id])]));
+  edges.forEach((e) => { near.get(e.from).add(e.to); near.get(e.to).add(e.from); });
 
-  const edgeSvg = graph.edges.map((e) => {
+  const edgeSvg = edges.map((e) => {
     const a = byId.get(e.from);
     const b = byId.get(e.to);
     const dist = Math.max(1, Math.hypot(b.x - a.x, b.y - a.y));
@@ -84,50 +108,106 @@ export async function render(root) {
     return `<path class="map-edge" data-from="${e.from}" data-to="${e.to}" marker-end="url(#arrow)"
       d="M${(a.x + ux * R).toFixed(1)},${(a.y + uy * R).toFixed(1)} Q${mx.toFixed(1)},${my.toFixed(1)} ${(b.x - ux * (R + 6)).toFixed(1)},${(b.y - uy * (R + 6)).toFixed(1)}"/>`;
   }).join("");
-  const nodeSvg = graph.nodes.map((d) => {
+  const nodeSvg = nodes.map((d) => {
     const label = `${d.title}${d.year ? ` (${d.year})` : ""} · ${STATUS[d.status]} · 연결 ${near.get(d.id).size - 1}개`;
     return `<a class="map-node ${d.status === "done" ? "done" : ""}" href="#/paper/${d.id}" data-id="${d.id}" data-tip="${esc(label)}" aria-label="${esc(label)}">
       <circle cx="${d.x.toFixed(1)}" cy="${d.y.toFixed(1)}" r="${R}"/>
-      <text x="${(d.x + R + 5).toFixed(1)}" y="${(d.y + 4).toFixed(1)}">${esc(shortTitle(d.title))}</text></a>`;
+      <text x="${d.place.tx.toFixed(1)}" y="${d.place.ty.toFixed(1)}" text-anchor="${d.place.anchor}">${esc(d.label)}</text></a>`;
   }).join("");
-  const title = (id) => esc(byId.get(id).title);
-  const rows = graph.edges.map((e) => `<tr><td><a href="#/paper/${e.from}">${title(e.from)}</a></td><td>→</td><td><a href="#/paper/${e.to}">${title(e.to)}</a></td></tr>`).join("");
+
+  box.innerHTML = `<svg class="map-svg ${nodes.length > DENSE ? "dense" : ""}" id="map" viewBox="0 0 ${W} ${H}" role="group" aria-label="논문 ${nodes.length}편, 연결 ${edges.length}개">
+    <defs><marker id="arrow" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="map-arrow" d="M0,1 L10,5 L0,9 z"/></marker></defs>
+    ${edgeSvg}${nodeSvg}</svg>`;
+  return { byId, near };
+}
+
+export async function render(root) {
+  const [graph, tracks] = await Promise.all([api("/api/graph"), api("/api/roadmaps")]);
+  const head = `<a class="crumb" href="#/library">← 라이브러리</a>
+    <div class="page-head"><div><h1>연결 지도</h1><p>노트에서 서로 언급한 논문들이에요. 화살표는 "이 노트가 저 논문을 언급했다"는 뜻이에요.</p></div></div>`;
+
+  if (!graph.edges.length) {
+    root.innerHTML = `<div class="page">${head}<div class="empty"><h3>아직 연결된 논문이 없어요</h3>
+      <p>노트에서 다른 논문을 <code>[[arXiv ID]]</code>로 언급하면 여기에 선으로 이어져요.<br>편집기에서 <code>[[</code>를 치면 라이브러리 논문을 골라 넣을 수 있어요.</p>
+      <div class="row"><a class="btn" href="#/library">라이브러리로</a></div></div></div>`;
+    return;
+  }
+
+  const onMap = new Set(graph.nodes.map((d) => d.arxiv_id).filter(Boolean));
+  const trackOptions = tracks.filter((t) => t.papers.some((p) => onMap.has(p.arxiv_id)));
+  const tagCounts = new Map();
+  graph.nodes.forEach((d) => tagsOf(d).forEach((t) => tagCounts.set(t, (tagCounts.get(t) || 0) + 1)));
+  const tagOptions = [...tagCounts].sort((a, b) => b[1] - a[1]).slice(0, 30);
+  if (!trackOptions.some((t) => t.key === state.track)) state.track = "";
+  if (!tagCounts.has(state.tag)) state.tag = "";
 
   root.innerHTML = `<div class="page wide">${head}
-    <div class="map-wrap">
-      <svg class="map-svg" id="map" viewBox="0 0 ${W} ${H}" role="group" aria-label="논문 ${graph.nodes.length}편, 연결 ${graph.edges.length}개">
-        <defs><marker id="arrow" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-          <path class="map-arrow" d="M0,1 L10,5 L0,9 z"/></marker></defs>
-        ${edgeSvg}${nodeSvg}</svg>
+    <div class="toolbar">
+      <select class="select" id="map-track" aria-label="로드맵 트랙으로 거르기"><option value="">모든 트랙</option>
+        ${trackOptions.map((t) => `<option value="${esc(t.key)}" ${state.track === t.key ? "selected" : ""}>${esc(t.name)}</option>`).join("")}</select>
+      <select class="select" id="map-tag" aria-label="태그로 거르기"><option value="">모든 태그</option>
+        ${tagOptions.map(([t, n]) => `<option value="${esc(t)}" ${state.tag === t ? "selected" : ""}>${esc(t)} (${n})</option>`).join("")}</select>
+      <span class="small muted" id="map-count"></span>
+    </div>
+    <div class="map-wrap"><div id="map-box"></div>
       <div class="map-legend">
         <span><svg width="14" height="14"><circle cx="7" cy="7" r="5" fill="var(--accent)" stroke="var(--accent)" stroke-width="2"/></svg>완독</span>
         <span><svg width="14" height="14"><circle cx="7" cy="7" r="5" fill="var(--surface)" stroke="var(--accent)" stroke-width="2"/></svg>읽을 예정 · 읽는 중</span>
-        <span>논문 ${graph.nodes.length}편 · 연결 ${graph.edges.length}개${graph.isolated ? ` · 연결 없는 논문 ${graph.isolated}편은 표시하지 않음` : ""}</span>
-      </div>
-    </div>
+        <span>${graph.isolated ? `연결 없는 논문 ${graph.isolated}편은 표시하지 않아요` : ""}</span>
+      </div></div>
     <details class="card" style="margin-top:12px"><summary style="cursor:pointer;font-weight:650">표로 보기</summary>
-      <table class="activity" style="margin-top:10px"><tbody>${rows}</tbody></table></details>
+      <table class="activity" style="margin-top:10px"><tbody id="map-rows"></tbody></table></details>
   </div>`;
 
-  const svg = $("#map", root);
   const tip = document.createElement("div");
   tip.className = "tooltip hidden";
   document.body.appendChild(tip);
+  const box = $("#map-box", root);
+  let near = new Map();
+
+  const draw = () => {
+    const inTrack = state.track ? new Set(tracks.find((t) => t.key === state.track).papers.map((p) => p.arxiv_id)) : null;
+    const nodes = graph.nodes
+      .filter((d) => (!inTrack || inTrack.has(d.arxiv_id)) && (!state.tag || tagsOf(d).includes(state.tag)))
+      .map((d) => ({ ...d }));
+    const kept = new Set(nodes.map((d) => d.id));
+    const edges = graph.edges.filter((e) => kept.has(e.from) && kept.has(e.to));
+    const filtered = Boolean(state.track || state.tag);
+    $("#map-count", root).textContent = `논문 ${nodes.length}편 · 연결 ${edges.length}개${filtered ? ` (전체 ${graph.nodes.length}편 중)` : ""}${nodes.length > DENSE ? " · 이름은 점을 가리키면 보여요" : ""}`;
+    tip.classList.add("hidden");
+    if (!nodes.length) {
+      box.innerHTML = `<div class="empty"><h3>조건에 맞는 논문이 없어요</h3></div>`;
+      $("#map-rows", root).innerHTML = "";
+      return;
+    }
+    const drawn = drawMap(box, nodes, edges);
+    near = drawn.near;
+    const title = (id) => esc(drawn.byId.get(id).title);
+    $("#map-rows", root).innerHTML = edges.map((e) => `<tr><td><a href="#/paper/${e.from}">${title(e.from)}</a></td><td>→</td><td><a href="#/paper/${e.to}">${title(e.to)}</a></td></tr>`).join("")
+      || `<tr><td class="muted">이 조건에서는 서로 이어진 논문이 없어요.</td></tr>`;
+  };
+  draw();
+
+  $("#map-track", root).addEventListener("change", (e) => { state.track = e.target.value; draw(); });
+  $("#map-tag", root).addEventListener("change", (e) => { state.tag = e.target.value; draw(); });
+
   const focus = (node) => {
+    const svg = node.ownerSVGElement;
     const group = near.get(Number(node.dataset.id));
     svg.classList.add("focusing");
     svg.querySelectorAll(".map-node").forEach((el) => el.classList.toggle("near", group.has(Number(el.dataset.id))));
     svg.querySelectorAll(".map-edge").forEach((el) => el.classList.toggle("near", el.dataset.from === node.dataset.id || el.dataset.to === node.dataset.id));
-    const box = node.querySelector("circle").getBoundingClientRect();
+    const rect = node.querySelector("circle").getBoundingClientRect();
     tip.textContent = node.dataset.tip;
-    tip.style.left = `${Math.min(window.innerWidth - 20, Math.max(20, box.left + box.width / 2))}px`;
-    tip.style.top = `${box.top}px`;
+    tip.style.left = `${Math.min(window.innerWidth - 20, Math.max(20, rect.left + rect.width / 2))}px`;
+    tip.style.top = `${rect.top}px`;
     tip.classList.remove("hidden");
   };
-  const blur = () => { svg.classList.remove("focusing"); tip.classList.add("hidden"); };
-  svg.addEventListener("mouseover", (e) => { const node = e.target.closest(".map-node"); if (node) focus(node); });
-  svg.addEventListener("mouseout", (e) => { if (e.target.closest(".map-node")) blur(); });
-  svg.addEventListener("focusin", (e) => { const node = e.target.closest(".map-node"); if (node) focus(node); });
-  svg.addEventListener("focusout", blur);
+  const blur = () => { box.querySelector("svg")?.classList.remove("focusing"); tip.classList.add("hidden"); };
+  box.addEventListener("mouseover", (e) => { const node = e.target.closest(".map-node"); if (node) focus(node); });
+  box.addEventListener("mouseout", (e) => { if (e.target.closest(".map-node")) blur(); });
+  box.addEventListener("focusin", (e) => { const node = e.target.closest(".map-node"); if (node) focus(node); });
+  box.addEventListener("focusout", blur);
   return () => tip.remove();
 }
