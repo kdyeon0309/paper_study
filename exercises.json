@@ -1,0 +1,93 @@
+[
+ {
+  "key": "01_softmax_ce",
+  "title": "Softmax와 Cross-Entropy",
+  "minutes": 40,
+  "kind": "기초",
+  "papers": [],
+  "summary": "분류 loss와 그 기울기를 유도하고, 큰 값에서도 터지지 않게 구현한다."
+ },
+ {
+  "key": "02_iou_nms",
+  "title": "IoU와 NMS",
+  "minutes": 50,
+  "kind": "기초",
+  "papers": [
+   "1506.01497"
+  ],
+  "summary": "상자 겹침 계산과 중복 제거. 읽어서 아는 것과 버그 없이 짜는 것의 차이를 확인한다."
+ },
+ {
+  "key": "03_conv2d",
+  "title": "Conv2d 순전파와 역전파",
+  "minutes": 90,
+  "kind": "기초",
+  "papers": [
+   "1409.1556",
+   "1512.03385"
+  ],
+  "summary": "프레임워크가 해주던 합성곱을 손으로. 한 입력이 여러 출력에 쓰인다는 점이 역전파의 전부다."
+ },
+ {
+  "key": "04_batchnorm",
+  "title": "Batch Normalization",
+  "minutes": 70,
+  "kind": "기초",
+  "papers": [
+   "1502.03167"
+  ],
+  "summary": "학습과 추론에서 다르게 동작하는 층. 세 갈래 경로의 역전파를 유도한다."
+ },
+ {
+  "key": "05_adam",
+  "title": "Adam과 AdamW",
+  "minutes": 45,
+  "kind": "기초",
+  "papers": [
+   "1412.6980",
+   "1711.05101"
+  ],
+  "summary": "bias correction의 의미, 그리고 weight decay를 기울기에 섞는 것과 따로 거는 것의 차이."
+ },
+ {
+  "key": "06_attention",
+  "title": "Scaled Dot-Product Attention",
+  "minutes": 60,
+  "kind": "논문",
+  "papers": [
+   "1706.03762",
+   "2010.11929"
+  ],
+  "summary": "ViT·DETR·CLIP이 모두 올라탄 연산. 마스크와 수치 안정성까지."
+ },
+ {
+  "key": "07_focal_loss",
+  "title": "Focal Loss",
+  "minutes": 50,
+  "kind": "논문",
+  "papers": [
+   "1708.02002"
+  ],
+  "summary": "쉬운 예제의 loss를 줄여 클래스 불균형을 다루는 loss와 그 기울기."
+ },
+ {
+  "key": "08_hungarian",
+  "title": "DETR의 이분 매칭",
+  "minutes": 120,
+  "kind": "논문",
+  "papers": [
+   "2005.12872"
+  ],
+  "summary": "예측과 정답을 일대일로 짝짓는 최소 비용 매칭. NMS가 사라지는 이유."
+ },
+ {
+  "key": "09_ddpm",
+  "title": "DDPM 한 스텝",
+  "minutes": 70,
+  "kind": "새 영역",
+  "papers": [
+   "2006.11239"
+  ],
+  "summary": "노이즈를 넣고, x0를 복원하고, 역방향 한 스텝의 평균을 구하는 가우시안 세 줄."
+ }
+]
