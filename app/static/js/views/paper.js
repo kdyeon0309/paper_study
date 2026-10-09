@@ -1,4 +1,4 @@
-import { api, esc, toast, copy, confirmDialog, statusSelect, renderMarkdown, notePrompt, refreshDueBadge, cardForm, submitCardForm, duration, STATUS, $ } from "../util.js";
+import { api, esc, toast, copy, confirmDialog, statusSelect, renderMarkdown, notePrompt, refreshDueBadge, cardForm, submitCardForm, duration, reviewPrompt, examPrompt, implPrompt, DEPTH, STATUS, $ } from "../util.js";
 
 const AUTOSAVE_MS = 1000;
 const POLL_MS = 6000;
@@ -7,6 +7,7 @@ export async function render(root, { args, alive }) {
   const id = Number(args[0]);
   let { paper, note, cards, bibtex, tracks, links, timer, recalls } = await api(`/api/papers/${id}`);
   let editingCard = null;
+  let templateKind = "deep";
   const md = (text) => renderMarkdown(text, { wiki: links.wiki });
   let content = note.content;
   let mtime = note.mtime;
@@ -39,6 +40,7 @@ export async function render(root, { args, alive }) {
         </div>
         ${tracks.map((t) => `<div class="paper-meta" style="margin-top:10px">로드맵 <a href="#/roadmap">${esc(t.name)}</a> ${t.position} / ${t.total}번째${
           t.next ? ` · 다음: <a href="${t.next.paper_id ? `#/paper/${t.next.paper_id}` : `https://arxiv.org/abs/${esc(t.next.arxiv_id)}" target="_blank" rel="noopener`}">${esc(t.next.title)}</a>${t.next.paper_id ? "" : " (아직 라이브러리에 없음)"}` : " · 이 트랙의 마지막 논문"}</div>`).join("")}
+        <div class="depth" id="depth-box"></div>
         <label class="field" style="margin-top:14px;max-width:460px"><span>태그</span>
           <input class="input" id="tags" placeholder="쉼표로 구분 (예: detection, transformer)" value="${esc(paper.tags)}"></label>
       </div>
@@ -49,7 +51,7 @@ export async function render(root, { args, alive }) {
           <div><h2>노트</h2><span class="small muted">${esc(note.path)}</span></div>
           <div class="row"><span class="save-state" id="save-state"></span>
             <button class="btn sm ghost" id="print-btn" title="노트만 인쇄하거나 PDF로 저장해요">인쇄</button>
-          <button class="btn sm" id="claude-btn">Claude에게 요청</button>
+          <button class="btn sm" id="claude-btn" aria-expanded="false">Claude와 공부하기</button>
             <button class="btn sm primary" id="edit-btn"></button></div>
         </div>
         <div id="note-extra" class="stack"></div>
@@ -76,7 +78,10 @@ export async function render(root, { args, alive }) {
       body.innerHTML = `<div class="md" style="margin-top:12px">${md(content)}</div>`;
     } else {
       body.innerHTML = `<div class="empty"><h3>아직 노트가 없어요</h3>
-        <p>템플릿으로 직접 쓰거나, Claude Code에 요청해 초안을 받아보세요.<br>어느 쪽이든 같은 파일(${esc(note.path)})에 저장돼요.</p></div>`;
+        <p>직접 쓰는 것이 기본이에요. 다 쓴 뒤 'Claude와 공부하기'에서 검토나 구술시험을 받으세요.</p>
+        <div class="row"><button class="btn primary" data-start="deep">3회독 템플릿으로 시작</button>
+          <button class="btn" data-start="quick">간단 템플릿으로 시작</button></div>
+        <p class="small muted" style="margin-top:10px">파일은 ${esc(note.path)} 에 저장돼요.</p></div>`;
     }
   }
 
@@ -280,6 +285,12 @@ export async function render(root, { args, alive }) {
     editor.dispatchEvent(new Event("input", { bubbles: true }));
     editor.focus();
   };
+  body.addEventListener("click", (e) => {
+    const kind = e.target.dataset.start;
+    if (!kind) return;
+    templateKind = kind;
+    $("#edit-btn", root).click();
+  });
   body.addEventListener("mousedown", (e) => {
     const option = e.target.closest("[data-pick]");
     if (!option) return;
@@ -325,7 +336,7 @@ export async function render(root, { args, alive }) {
     } else {
       editing = true;
       if (!content.trim()) {
-        const template = await api("/api/note-template").catch(() => "");
+        const template = await api(`/api/note-template?kind=${templateKind}`).catch(() => "");
         content = template.replace(/^# .*$/m, () => `# ${paper.title}`);
       }
     }
@@ -339,16 +350,65 @@ export async function render(root, { args, alive }) {
     window.print();
   });
 
-  $("#claude-btn", root).addEventListener("click", async () => {
-    const prompt = notePrompt(paper);
+  // Claude는 대신 써주는 사람이 아니라 검토하고 묻는 사람으로 쓴다. 대필은 맨 아래 지름길로만 둔다.
+  const MODES = [
+    ["review", "내 노트 검토받기", "내가 쓴 노트를 논문과 대조해 틀린 곳·빠진 곳·얕은 곳만 지적받아요. 고쳐 써주지 않아요.", reviewPrompt],
+    ["exam", "구술시험 보기", "한 번에 하나씩 '왜'와 '어떻게'를 묻고 채점해요. 막힌 부분만 카드로 남아요.", examPrompt],
+    ["impl", "구현 과제 받기", "핵심 부분의 최소 구현 과제와 채점 테스트를 받아요. 코드는 직접 써요.", implPrompt],
+    ["draft", "초안 대신 받기", "시간이 없을 때의 지름길이에요. 읽고 쓰는 과정을 건너뛰므로 이해 깊이는 오르지 않아요.", notePrompt],
+  ];
+  $("#claude-btn", root).addEventListener("click", () => {
+    const open = $("#claude-menu", root);
+    $("#claude-btn", root).setAttribute("aria-expanded", String(!open));
+    if (open) { extra.innerHTML = ""; return; }
+    extra.innerHTML = `<div class="mode-list" id="claude-menu">${MODES.map(([key, title, desc]) => `
+      <button class="mode ${key === "draft" ? "minor" : ""}" data-mode="${key}"${key === "review" && !exists ? " disabled" : ""}>
+        <strong>${title}</strong><span>${key === "review" && !exists ? "먼저 노트를 직접 써야 검토받을 수 있어요." : desc}</span></button>`).join("")}</div>`;
+  });
+  extra.addEventListener("click", async (e) => {
+    const mode = MODES.find(([key]) => key === e.target.closest("[data-mode]")?.dataset.mode);
+    if (!mode) return;
+    const prompt = mode[3](paper);
     const copied = await copy(prompt);
-    if (!exists && !paper.note_requested) {
+    if (mode[0] === "draft" && !exists && !paper.note_requested) {
       paper = await api(`/api/papers/${id}`, { method: "PATCH", body: { note_requested: true } }).catch(() => paper);
     }
     if (!alive()) return;
-    extra.innerHTML = `<div><div class="prompt-box">${esc(prompt)}</div>
-      <p class="small muted" style="margin-top:6px">${copied ? "프롬프트를 복사했어요. " : "위 내용을 복사해서 "}이 폴더에서 연 Claude Code에 붙여넣으세요. 노트 파일이 생기면 이 화면에 자동으로 나타나요.</p></div>`;
+    $("#claude-btn", root).setAttribute("aria-expanded", "false");
+    extra.innerHTML = `<div><div class="small muted" style="margin-bottom:4px">${mode[1]}</div><div class="prompt-box">${esc(prompt)}</div>
+      <p class="small muted" style="margin-top:6px">${copied ? "프롬프트를 복사했어요. " : "위 내용을 복사해서 "}이 폴더에서 연 Claude Code에 붙여넣으세요.${mode[0] === "draft" ? " 노트 파일이 생기면 이 화면에 자동으로 나타나요." : ""}</p></div>`;
     toast(copied ? "프롬프트를 복사했어요." : "프롬프트를 표시했어요. 직접 복사해주세요.");
+  });
+
+  // 이해 깊이: 단계마다 스스로 확인할 기준을 보여주고, 기준을 읽은 뒤 올리게 한다
+  const drawDepth = () => {
+    const d = paper.depth || 0;
+    $("#depth-box", root).innerHTML = `<div class="row" style="gap:10px"><span class="small" style="font-weight:600;color:var(--text-2)">이해 깊이</span>
+      <div class="depth-steps" role="radiogroup" aria-label="이해 깊이">${DEPTH.slice(1).map((level, i) => `<button class="depth-step ${i + 1 <= d ? "on" : ""}" role="radio" aria-checked="${i + 1 === d}" data-depth="${i + 1}" title="${esc(level.test)}">${i + 1} ${level.label}</button>`).join("")}</div>
+      ${d ? `<button class="linkish" data-depth="0">초기화</button>` : ""}</div>
+      <p class="small muted" style="margin-top:6px">${d < 4 ? `<strong>다음 단계(${DEPTH[d + 1].label})의 기준:</strong> ${esc(DEPTH[d + 1].test)}` : "구현까지 마쳤어요."}</p>
+      ${d >= 4 ? `<label class="field" style="margin-top:8px;max-width:460px"><span>구현 위치 (파일 경로나 저장소 주소)</span>
+        <input class="input" id="impl-path" value="${esc(paper.impl_path || "")}" placeholder="예: exercises/paper_2005_12872/solution.py"></label>` : ""}`;
+  };
+  drawDepth();
+  $("#depth-box", root).addEventListener("click", async (e) => {
+    const depth = e.target.dataset.depth;
+    if (depth === undefined) return;
+    try {
+      paper = await api(`/api/papers/${id}`, { method: "PATCH", body: { depth: Number(depth) } });
+      drawDepth();
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  });
+  $("#depth-box", root).addEventListener("change", async (e) => {
+    if (e.target.id !== "impl-path") return;
+    try {
+      paper = await api(`/api/papers/${id}`, { method: "PATCH", body: { impl_path: e.target.value } });
+      toast("구현 위치를 저장했어요.");
+    } catch (err) {
+      toast(err.message, "error");
+    }
   });
 
   extra.addEventListener("click", async (e) => {

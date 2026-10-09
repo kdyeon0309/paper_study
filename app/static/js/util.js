@@ -1,5 +1,13 @@
 export const STATUS = { to_read: "읽을 예정", reading: "읽는 중", done: "완료" };
 export const INTERVALS = [1, 3, 7, 14, 30, 60];
+// 이해 깊이. '완독' 하나로 뭉뚱그리지 않고, 어디까지 했는지를 단계로 남긴다.
+export const DEPTH = [
+  { label: "아직", short: "–", test: "아직 읽지 않았다." },
+  { label: "훑어봄", short: "훑어봄", test: "초록·그림·결론을 보고, 무슨 문제를 어떻게 풀었는지 두 문장으로 말할 수 있다." },
+  { label: "정독", short: "정독", test: "노트를 보지 않고 방법과 주요 실험 결과를 설명할 수 있다. 그림과 표를 직접 해석했다." },
+  { label: "유도", short: "유도", test: "핵심 식을 손으로 유도했거나, 알고리즘을 텐서 모양까지 적은 의사코드로 썼다." },
+  { label: "구현", short: "구현", test: "핵심 부분을 직접 구현해 돌려봤고, 맞게 짰다는 근거(테스트·재현 수치)가 있다." },
+];
 
 const ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 export const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ESC[c]);
@@ -204,11 +212,47 @@ export const background = {
 
 const backgroundLine = () => (background.get().trim() ? `\n\n내 배경: ${background.get().trim()}` : "");
 
+const refOf = (paper) => (paper.arxiv_id ? `arXiv:${paper.arxiv_id}` : paper.url || `id ${paper.id}`);
+
+/** 내가 쓴 노트를 논문과 대조해 지적만 받는다. 고쳐 써주지 않는다. */
+export function reviewPrompt(paper) {
+  return `내가 쓴 노트 notes/${paper.slug}.md 를 논문 "${paper.title}" (${refOf(paper)}) 본문과 대조해서 검토해줘.
+
+- 노트를 고쳐 쓰지 마. 파일은 건드리지 말고 지적만 해줘.
+- (1) 논문과 다르게 쓴 곳 (2) 빠뜨린 핵심 (3) 논문 문장을 옮기기만 하고 이해 없이 넘어간 것으로 보이는 곳, 이 세 가지로 나눠서.
+- 각 지적에는 논문의 어느 절·식·표를 보면 되는지 붙여줘. 정답 문장을 대신 써주지는 마.
+- '유도'와 '비판' 섹션은 특히 엄격하게. 건너뛴 줄이 있으면 어디인지 짚어줘.
+- 마지막에 이해 깊이를 훑어봄 / 정독 / 유도 / 구현 중 어디로 보는지와 그 근거를 한 줄로.${backgroundLine()}`;
+}
+
+/** 구술시험. 한 번에 하나씩 묻고 채점한다. */
+export function examPrompt(paper) {
+  return `논문 "${paper.title}" (${refOf(paper)}) 으로 구술시험을 봐줘. 먼저 논문 본문을 읽고 시작해.
+
+- 한 번에 질문 하나만. 내 답을 듣기 전에는 다음으로 넘어가지 마.
+- 사실 확인보다 "왜"와 "어떻게"를 물어줘: 설계 선택의 이유, 식의 유도 단계, 가정이 깨지는 경우, 표의 숫자가 뒷받침하는 것과 못 하는 것.
+- 내 답이 틀리거나 얕으면 바로 정답을 말하지 말고, 한 번 더 파고드는 질문을 해줘. 두 번 막히면 그때 설명해줘.
+- 8문제쯤 한 뒤, 내가 막힌 지점을 정리하고 그 부분을 Q:/A: 카드로 notes/${paper.slug}.md 의 "복습 카드" 섹션에 추가해줘. 카드는 내가 틀린 것만.
+- 봐주지 마. 대충 맞는 답은 틀린 걸로 쳐줘.${backgroundLine()}`;
+}
+
+/** 구현 과제를 받는다. 코드는 내가 쓴다. */
+export function implPrompt(paper) {
+  return `논문 "${paper.title}" (${refOf(paper)}) 의 핵심 부분을 내가 직접 구현하려고 해. 과제를 만들어줘.
+
+- 구현 코드는 쓰지 마. 내가 쓴다.
+- 논문에서 가장 핵심인 부분 하나를 골라, numpy나 PyTorch로 한두 시간 안에 짤 수 있는 최소 과제로 좁혀줘.
+- 줄 것: (1) 함수 이름과 입출력 텐서 모양 (2) 손으로 먼저 풀어볼 유도 문제 2~3개 (3) 내 구현이 맞는지 확인하는 테스트 코드. 테스트는 정답 구현을 베끼지 않고도 검증할 수 있게 수치 기울기, 손으로 계산한 작은 예, 성질(불변성 등)을 써줘.
+- exercises/ 폴더의 과제들(README.md, solution_template.py, check.py)과 같은 형식으로 exercises/paper_${paper.slug.replace(/[^A-Za-z0-9]/g, "_")}/ 에 만들어줘.
+- 내가 막히면 답 대신 힌트를 달라고 할 거야. 그때도 코드 전체를 주지는 마.${backgroundLine()}`;
+}
+
+/** 초안을 대신 받는다. 시간이 없을 때의 지름길이고, 받은 뒤에는 직접 고쳐 써야 남는다. */
 export function notePrompt(paper) {
-  const ref = paper.arxiv_id ? `arXiv:${paper.arxiv_id}` : paper.url || `id ${paper.id}`;
+  const ref = refOf(paper);
   return `논문 "${paper.title}" (${ref}) 을 읽고 스터디 노트를 notes/${paper.slug}.md 에 써줘.
 
-- notes/_TEMPLATE.md 의 구성을 따르고, 수식은 $...$ / $$...$$ 로 써줘.
+- notes/_TEMPLATE_QUICK.md 의 구성을 따르고, 수식은 $...$ / $$...$$ 로 써줘.
 - 논문에서 확인한 내용만 쓰고, 확인하지 못한 수치는 쓰지 말아줘.
 - 마지막 "복습 카드" 섹션에 Q: / A: 형식 카드를 5개 이상 넣어줘.
 - 내 라이브러리에 있는 다른 논문을 언급할 때는 [[arXiv ID]] 로 써줘 (목록: \`python -m app.cli list\`).
