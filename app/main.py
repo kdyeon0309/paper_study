@@ -42,6 +42,8 @@ class PaperUpdate(BaseModel):
     tags: str | None = None
     status: Status | None = None
     note_requested: bool | None = None
+    depth: int | None = Field(default=None, ge=0, le=4)
+    impl_path: str | None = Field(default=None, max_length=300)
 
 
 class ArxivAdd(BaseModel):
@@ -65,6 +67,10 @@ class SavedSearch(BaseModel):
 class CardEdit(BaseModel):
     question: str = Field(min_length=1, max_length=500)
     answer: str = Field(min_length=1, max_length=5000)
+
+
+class ExerciseUpdate(BaseModel):
+    status: Literal["todo", "doing", "done"]
 
 
 class TimerAction(BaseModel):
@@ -125,6 +131,7 @@ FIELD_NAMES = {
     "question": "질문", "answer": "답", "content": "노트 내용", "grade": "평가", "text": "내용", "q": "검색어",
     "name": "이름", "kind": "종류", "description": "설명", "ref": "arXiv ID", "why": "읽는 이유", "ids": "arXiv ID 목록",
     "goal_days": "공부한 날 목표", "goal_papers": "완독 목표", "action": "동작", "move": "이동",
+    "depth": "이해 깊이", "impl_path": "구현 위치",
 }
 
 
@@ -436,8 +443,8 @@ def goals_set(body: Goals):
 
 
 @app.get("/api/note-template", response_class=PlainTextResponse)
-def note_template():
-    return notes.template()
+def note_template(kind: Literal["deep", "quick"] = "deep"):
+    return notes.template(kind)
 
 
 # ---------- review ----------
@@ -479,7 +486,51 @@ def stats():
     result["notes"] = sum(p["note_mtime"] is not None for p in papers)
     result["note_requests"] = sum(bool(p["note_requested"]) for p in papers)
     result["recalls_due"] = len(db.due_recalls())
+    result["depth"] = db.depth_counts()
+    result["exercises_done"] = sum(e["status"] == "done" for e in db.exercise_states().values())
+    result["exercises_total"] = len(_exercise_list())
     return result
+
+
+def _exercise_list() -> list[dict]:
+    if not config.EXERCISE_FILE.exists():
+        return []
+    return json.loads(config.EXERCISE_FILE.read_text(encoding="utf-8"))
+
+
+@app.get("/api/exercises")
+def exercises():
+    """Hands-on implementation exercises with your progress and the library papers each one relates to."""
+    states = db.exercise_states()
+    index = _library_index()
+    out = []
+    for item in _exercise_list():
+        state = states.get(item["key"], {})
+        out.append({
+            **item,
+            "status": state.get("status", "todo"),
+            "done_at": state.get("done_at"),
+            "folder": f"exercises/{item['key']}",
+            "related": [{"arxiv_id": a, "paper_id": index.get(a, {}).get("id"), "title": index.get(a, {}).get("title")}
+                        for a in item.get("papers", [])],
+        })
+    return out
+
+
+@app.get("/api/exercises/{key}/readme", response_class=PlainTextResponse)
+def exercise_readme(key: str):
+    if not any(item["key"] == key for item in _exercise_list()):
+        raise HTTPException(404, "과제를 찾을 수 없어요.")
+    path = config.REPO / "exercises" / key / "README.md"
+    return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
+@app.patch("/api/exercises/{key}")
+def exercise_update(key: str, body: ExerciseUpdate):
+    item = next((x for x in _exercise_list() if x["key"] == key), None)
+    if not item:
+        raise HTTPException(404, "과제를 찾을 수 없어요.")
+    return db.set_exercise(key, item["title"], body.status)
 
 
 @app.get("/api/monthly")
@@ -504,6 +555,7 @@ def _with_library(track: dict, by_arxiv: dict) -> dict:
         saved = by_arxiv.get(item["arxiv_id"])
         item["paper_id"] = saved["id"] if saved else None
         item["status"] = saved["status"] if saved else None
+        item["depth"] = saved["depth"] if saved else 0
     return track
 
 

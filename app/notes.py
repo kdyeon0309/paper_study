@@ -7,6 +7,7 @@ from . import arxiv, config, db
 
 SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
 TEMPLATE_FILE = "_TEMPLATE.md"
+QUICK_TEMPLATE_FILE = "_TEMPLATE_QUICK.md"
 _FENCE = re.compile(r"^(```|~~~)")
 _Q = re.compile(r"^\s*(?:[-*]\s+)?\**Q\**\s*[:：]\**\s*(.+)$", re.I)
 _A = re.compile(r"^\s*(?:[-*]\s+)?\**A\**\s*[:：]\**\s*(.*)$", re.I)
@@ -160,10 +161,12 @@ def migrate_legacy_names():
             old.rename(new)
 
 
-def template() -> str:
-    path = config.NOTES_DIR / TEMPLATE_FILE
+def template(kind: str = "deep") -> str:
+    """'deep' is the three-pass template; 'quick' is the short one for skimming."""
+    name = TEMPLATE_FILE if kind == "deep" else QUICK_TEMPLATE_FILE
+    path = config.NOTES_DIR / name
     if not path.exists():
-        path = config.REPO / "notes" / TEMPLATE_FILE
+        path = config.REPO / "notes" / name
     return path.read_text(encoding="utf-8") if path.exists() else ""
 
 

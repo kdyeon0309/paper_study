@@ -28,10 +28,15 @@ PAPER_COLUMNS = {
     "finished_at": "TEXT",
     # v0.6
     "recall_due": "TEXT",
+    # v1.0
+    "depth": "INTEGER NOT NULL DEFAULT 0",
+    "impl_path": "TEXT DEFAULT ''",
 }
 RECALL_FIRST, RECALL_GOOD, RECALL_HAZY = 7, 30, 7   # 완독 뒤 첫 회상 / 기억났을 때 / 가물가물할 때 다음 회상까지의 일수
 SESSION_GAP = 120                                   # 이 시간(초) 넘게 신호가 없으면 읽기 세션이 끝난 것으로 본다
-EDITABLE = {"title", "authors", "year", "url", "pdf_url", "abstract", "tags", "status", "note_requested"}
+EDITABLE = {"title", "authors", "year", "url", "pdf_url", "abstract", "tags", "status", "note_requested", "depth", "impl_path"}
+# 이해 깊이: 0 아직 / 1 훑어봄 / 2 정독 / 3 유도 / 4 구현
+DEPTH_MAX = 4
 INSERTABLE = ("title", "authors", "year", "url", "pdf_url", "abstract", "tags", "status",
               "arxiv_id", "published", "categories", "comment")
 
@@ -66,6 +71,12 @@ CREATE TABLE IF NOT EXISTS saved_searches (
     UNIQUE (q, cat)
 );
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS exercises (
+    key TEXT PRIMARY KEY,
+    status TEXT NOT NULL DEFAULT 'todo',   -- todo | doing | done
+    done_at TEXT,
+    updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS reading_sessions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     paper_id INTEGER NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
@@ -267,6 +278,10 @@ def update_paper(paper_id: int, fields: dict) -> dict | None:
         updates["tags"] = normalize_tags(updates["tags"])
     if "note_requested" in updates:
         updates["note_requested"] = int(bool(updates["note_requested"]))
+    if "depth" in updates and not (isinstance(updates["depth"], int) and 0 <= updates["depth"] <= DEPTH_MAX):
+        raise ValueError(f"이해 깊이는 0부터 {DEPTH_MAX} 사이여야 해요.")
+    if "impl_path" in updates:
+        updates["impl_path"] = str(updates["impl_path"]).strip()[:300]
     with connect() as conn:
         row = conn.execute("SELECT * FROM papers WHERE id=?", (paper_id,)).fetchone()
         if not row:
@@ -277,6 +292,8 @@ def update_paper(paper_id: int, fields: dict) -> dict | None:
                 updates["finished_at"] = date.today().isoformat() if done else None
                 updates["recall_due"] = (date.today() + timedelta(days=RECALL_FIRST)).isoformat() if done else None
                 log(conn, "status", paper_id, updates["status"])
+            if "depth" in updates and updates["depth"] > (row["depth"] or 0):
+                log(conn, "depth", paper_id, str(updates["depth"]))
             updates["updated_at"] = _now()
             sets = ", ".join(f"{k}=?" for k in updates)
             conn.execute(f"UPDATE papers SET {sets} WHERE id=?", (*updates.values(), paper_id))
@@ -699,3 +716,36 @@ def monthly(today: date | None = None, months: int = 12) -> list[dict]:
             if r["m"] in rows:
                 rows[r["m"]]["minutes"] = (r["s"] or 0) // 60
     return list(rows.values())
+
+
+# ---------- implementation exercises ----------
+
+EXERCISE_STATUSES = ("todo", "doing", "done")
+
+
+def exercise_states() -> dict[str, dict]:
+    with connect() as conn:
+        return {r["key"]: dict(r) for r in conn.execute("SELECT * FROM exercises")}
+
+
+def set_exercise(key: str, title: str, status: str) -> dict:
+    if status not in EXERCISE_STATUSES:
+        raise ValueError(f"상태는 {', '.join(EXERCISE_STATUSES)} 중 하나여야 해요.")
+    now = _now()
+    with connect() as conn:
+        before = conn.execute("SELECT status FROM exercises WHERE key=?", (key,)).fetchone()
+        conn.execute(
+            """INSERT INTO exercises (key, status, done_at, updated_at) VALUES (?,?,?,?)
+               ON CONFLICT(key) DO UPDATE SET status=excluded.status, done_at=excluded.done_at, updated_at=excluded.updated_at""",
+            (key, status, now[:10] if status == "done" else None, now))
+        if status != "todo" and (not before or before["status"] != status):
+            log(conn, "exercise", None, f"{title}|{status}")
+        return dict(conn.execute("SELECT * FROM exercises WHERE key=?", (key,)).fetchone())
+
+
+def depth_counts() -> dict[int, int]:
+    counts = {d: 0 for d in range(DEPTH_MAX + 1)}
+    with connect() as conn:
+        for r in conn.execute("SELECT depth, COUNT(*) n FROM papers GROUP BY depth"):
+            counts[min(DEPTH_MAX, max(0, r["depth"] or 0))] += r["n"]
+    return counts
