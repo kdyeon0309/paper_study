@@ -172,6 +172,8 @@ function activityText(a) {
   if (a.kind === "note") return "노트 작성";
   if (a.kind === "review") return "카드 복습";
   if (a.kind === "read") return "읽기";
+  if (a.kind === "depth") return `이해 깊이 ${a.detail}`;
+  if (a.kind === "exercise") return a.detail.endsWith("|done") ? "구현 과제 통과" : "구현 과제 시작";
   if (a.kind === "recall") return a.detail === "good" ? "회상: 기억났음" : "회상: 가물가물";
   return a.kind;
 }
@@ -184,7 +186,8 @@ function onboarding() {
       <div class="card"><div class="steps">
         <div class="step"><h3>읽을 논문 고르기</h3><p>분야별 필독 논문을 순서대로 정리한 로드맵에서 시작하거나, arXiv를 직접 검색하세요.</p>
           <div class="row"><a class="btn primary" href="#/roadmap">로드맵 보기</a><a class="btn" href="#/search">arXiv 검색</a></div></div>
-        <div class="step"><h3>노트 쓰기</h3><p>논문 페이지에서 직접 쓰거나, Claude Code에 요청하면 notes/ 폴더에 써준 노트가 바로 보여요. API 키는 필요 없어요.</p></div>
+        <div class="step"><h3>직접 읽고 쓰기</h3><p>3회독 템플릿으로 노트를 직접 쓰고, Claude Code에는 검토와 구술시험을 맡겨요. 기초가 흔들리면 구현 과제부터.</p>
+          <div class="row"><a class="btn" href="#/guide">사용법 읽기</a><a class="btn" href="#/practice">구현 과제</a></div></div>
         <div class="step"><h3>복습하기</h3><p>노트에 <code>Q:</code> / <code>A:</code> 를 적어두면 복습 카드가 되고, 간격을 늘려가며 다시 물어봐요.</p></div>
       </div></div>
     </div>`;
@@ -244,7 +247,7 @@ export async function render(root) {
 
   const recent = stats.recent.map((a) => `
     <tr><td>${esc(a.day.slice(5).replace("-", "/"))}</td><td>${esc(activityText(a))}</td>
-      <td>${a.paper_id ? `<a href="#/paper/${a.paper_id}">${esc(a.title)}</a>` : esc(a.title || a.detail || "")}</td></tr>`).join("");
+      <td>${a.paper_id ? `<a href="#/paper/${a.paper_id}">${esc(a.title)}</a>` : esc(a.title || String(a.detail || "").split("|")[0])}</td></tr>`).join("");
 
   const today = new Date();
   root.innerHTML = `
@@ -260,6 +263,7 @@ export async function render(root) {
         <div class="tile"><div class="label">이번 달 완독</div><div class="value">${stats.month_done}<small>편</small></div><div class="sub">전체 완독 ${stats.by_status.done}편</div></div>
         <div class="tile"><div class="label">읽는 중</div><div class="value">${stats.by_status.reading}<small>편</small></div><div class="sub">읽을 예정 ${stats.by_status.to_read}편</div></div>
         <div class="tile"><div class="label">노트</div><div class="value">${stats.notes}<small>개</small></div><div class="sub">논문 ${stats.total}편 중</div></div>
+        <div class="tile"><div class="label">깊이 있게 읽음</div><div class="value">${(stats.depth[3] || 0) + (stats.depth[4] || 0)}<small>편</small></div><div class="sub">유도 이상 · 구현 과제 ${stats.exercises_done}/${stats.exercises_total}</div></div>
         <div class="tile"><div class="label">복습 대기</div><div class="value">${stats.cards_due}<small>장</small></div><div class="sub">전체 카드 ${stats.cards_total}장</div></div>
       </div>
       <div class="card" id="weekly" style="margin-top:12px"></div>

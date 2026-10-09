@@ -1,4 +1,4 @@
-import { api, esc, toast, authorsShort, tagsOf, statusSelect, STATUS, $ } from "../util.js";
+import { api, esc, toast, authorsShort, tagsOf, statusSelect, DEPTH, STATUS, $ } from "../util.js";
 
 const PAGE = 100;
 const state = { status: "all", q: "", tag: "", sort: "updated" };
@@ -17,7 +17,7 @@ function row(p) {
       <div><a class="paper-title" href="#/paper/${p.id}">${esc(p.title)}</a>
         <div class="paper-meta">${esc([authorsShort(p.authors), p.year].filter(Boolean).join(" · "))}</div>
         ${tags ? `<div class="row" style="margin-top:6px;gap:4px">${tags}</div>` : ""}</div>
-      <div class="paper-side">${note}${statusSelect(p)}</div>
+      <div class="paper-side">${p.depth ? `<span class="chip depth-chip" title="이해 깊이: ${esc(DEPTH[p.depth].test)}">${p.depth} ${DEPTH[p.depth].short}</span>` : ""}${note}${statusSelect(p)}</div>
     </div>`;
 }
 

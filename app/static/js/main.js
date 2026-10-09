@@ -8,6 +8,8 @@ import * as roadmap from "./views/roadmap.js";
 import * as surveys from "./views/surveys.js";
 import * as map from "./views/map.js";
 import * as settings from "./views/settings.js";
+import * as practice from "./views/practice.js";
+import * as guide from "./views/guide.js";
 
 const ROUTES = [
   [/^\/?$/, "home", home],
@@ -16,13 +18,15 @@ const ROUTES = [
   [/^\/paper\/(\d+)$/, "library", paper],
   [/^\/map$/, "library", map],
   [/^\/settings$/, "settings", settings],
+  [/^\/practice$/, "roadmap", practice],
+  [/^\/guide$/, "guide", guide],
   [/^\/review$/, "review", review],
   [/^\/roadmap$/, "roadmap", roadmap],
   [/^\/surveys$/, "surveys", surveys],
   [/^\/surveys\/([\w.-]+)$/, "surveys", surveys],
 ];
 
-const TITLES = { home: "홈", search: "검색", library: "라이브러리", review: "복습", roadmap: "로드맵", surveys: "서베이", settings: "설정" };
+const TITLES = { home: "홈", search: "검색", library: "라이브러리", review: "복습", roadmap: "로드맵", surveys: "서베이", settings: "설정", guide: "사용법" };
 const view = $("#view");
 let cleanup = null;
 let renderToken = 0;
@@ -59,7 +63,7 @@ async function route() {
 
 window.addEventListener("hashchange", route);
 
-const GO = { h: "#/", s: "#/search", l: "#/library", r: "#/review", m: "#/roadmap", v: "#/surveys", c: "#/map" };
+const GO = { h: "#/", s: "#/search", l: "#/library", r: "#/review", m: "#/roadmap", v: "#/surveys", c: "#/map", p: "#/practice" };
 let goUntil = 0;  // g 를 누른 뒤 이 시각까지 다음 키를 기다린다
 
 document.addEventListener("keydown", (e) => {

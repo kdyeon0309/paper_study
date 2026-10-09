@@ -478,3 +478,21 @@ input[type="radio"] { accent-color: var(--accent); }
   .md pre, .md blockquote, .md table, .katex-display { break-inside: avoid; }
   a { color: inherit; text-decoration: none; }
 }
+
+/* ---------- depth ladder, Claude modes ---------- */
+.depth { margin-top: 14px; }
+.depth-steps { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.depth-step { border: none; border-right: 1px solid var(--border); background: var(--surface); color: var(--text-2); padding: 5px 12px; font-size: 13px; font-weight: 550; cursor: pointer; }
+.depth-step:last-child { border-right: none; }
+.depth-step:hover { background: var(--surface-2); }
+.depth-step.on { background: var(--accent-soft); color: var(--accent-ink); }
+.depth-step[aria-checked="true"] { background: var(--accent-fill); color: var(--on-accent); }
+.depth-chip { background: var(--accent-soft); color: var(--accent-ink); }
+.mode-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; }
+.mode { display: flex; flex-direction: column; gap: 4px; text-align: left; padding: 12px 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); color: var(--text); cursor: pointer; }
+.mode:hover:not(:disabled) { border-color: var(--accent); }
+.mode span { font-size: 13px; color: var(--text-2); line-height: 1.5; }
+.mode.minor { border-style: dashed; }
+.mode.minor strong { font-weight: 550; color: var(--text-2); }
+.mode:disabled { opacity: .6; cursor: default; }
+@media print { .depth, .mode-list { display: none !important; } }
