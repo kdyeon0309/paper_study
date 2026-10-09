@@ -202,6 +202,24 @@ class ApiTest(unittest.TestCase):
         finally:
             del PAPERS["2501.00001"]
 
+    def test_06b_depth_and_exercises(self):
+        self.assertEqual(self.call("PATCH", "/api/papers/1", {"depth": 3})["depth"], 3)
+        self.assertEqual(self.call("PATCH", "/api/papers/1", {"depth": 7}, expect=422)["detail"], "이해 깊이: 4 이하여야 해요.")
+        mine = self.call("GET", "/api/roadmaps")[0]
+        self.assertEqual([p["depth"] for p in mine["papers"]], [3])
+        items = self.call("GET", "/api/exercises")
+        self.assertEqual((len(items), items[0]["status"], items[0]["folder"]), (9, "todo", "exercises/01_softmax_ce"))
+        attention = next(x for x in items if x["key"] == "06_attention")
+        self.assertEqual([(r["arxiv_id"], r["paper_id"]) for r in attention["related"]], [("1706.03762", 2), ("2010.11929", 1)])
+        self.assertIn("손으로 먼저", self.call("GET", "/api/exercises/02_iou_nms/readme"))
+        self.assertEqual(self.call("PATCH", "/api/exercises/02_iou_nms", {"status": "done"})["status"], "done")
+        self.call("PATCH", "/api/exercises/nope", {"status": "done"}, expect=404)
+        self.call("GET", "/api/exercises/..%2F..%2Fapp/readme", expect=404)
+        stats = self.call("GET", "/api/stats")
+        self.assertEqual((stats["depth"]["3"], stats["exercises_done"], stats["exercises_total"]), (1, 1, 9))
+        self.assertIn("3회독", self.call("GET", "/api/note-template"))
+        self.assertNotIn("3회독", self.call("GET", "/api/note-template?kind=quick"))
+
     def test_07_backup_restore_and_delete(self):
         backup = self.call("GET", "/api/export.json")
         self.assertEqual((len(backup["papers"]), len(backup["tracks"]), len(backup["searches"])), (2, 1, 1))

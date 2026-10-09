@@ -700,6 +700,53 @@ class SafetyTest(TempHome):
         self.assertEqual(db.monthly(date(2026, 1, 15), months=3)[0]["month"], "2025-11", "the window crosses the year boundary")
 
 
+class DepthTest(TempHome):
+    def test_depth_levels(self):
+        p = self.paper()
+        self.assertEqual(p["depth"], 0)
+        self.assertEqual(db.update_paper(p["id"], {"depth": 2})["depth"], 2)
+        self.assertEqual(db.update_paper(p["id"], {"depth": 4, "impl_path": "  exercises/x/solution.py "})["impl_path"], "exercises/x/solution.py")
+        db.update_paper(p["id"], {"depth": 1})   # 낮추는 것은 기록하지 않는다
+        for bad in (-1, 5, "3", 2.5):
+            with self.assertRaises(ValueError, msg=bad):
+                db.update_paper(p["id"], {"depth": bad})
+        kinds = [(a["kind"], a["detail"]) for a in db.stats()["recent"] if a["kind"] == "depth"]
+        self.assertEqual(kinds, [("depth", "4"), ("depth", "2")])
+        self.assertEqual(db.get_paper(p["id"])["status"], "to_read", "depth and reading status are separate")
+        db.add_paper({"title": "Other"})
+        self.assertEqual(db.depth_counts(), {0: 1, 1: 1, 2: 0, 3: 0, 4: 0})
+
+    def test_exercise_progress(self):
+        self.assertEqual(db.exercise_states(), {})
+        self.assertEqual(db.set_exercise("02_iou_nms", "IoU와 NMS", "doing")["status"], "doing")
+        done = db.set_exercise("02_iou_nms", "IoU와 NMS", "done")
+        self.assertEqual((done["status"], done["done_at"]), ("done", date.today().isoformat()))
+        db.set_exercise("02_iou_nms", "IoU와 NMS", "done")   # 같은 상태를 다시 눌러도 기록은 한 번
+        self.assertIsNone(db.set_exercise("02_iou_nms", "IoU와 NMS", "todo")["done_at"])
+        with self.assertRaises(ValueError):
+            db.set_exercise("02_iou_nms", "x", "skipped")
+        logged = [a["detail"] for a in db.stats()["recent"] if a["kind"] == "exercise"]
+        self.assertEqual(logged, ["IoU와 NMS|done", "IoU와 NMS|doing"])
+
+    def test_two_templates_and_exercise_files(self):
+        import json
+        deep, quick = notes.template("deep"), notes.template("quick")
+        self.assertIn("3회독", deep)
+        self.assertIn("가정과 그것이 깨지는 경우", deep)
+        self.assertNotIn("3회독", quick)
+        self.assertEqual(notes.parse_cards(deep), [], "placeholder cards with empty answers are not cards")
+        self.assertEqual(notes.parse_cards(quick), [])
+        listed = json.loads(config.EXERCISE_FILE.read_text(encoding="utf-8"))
+        self.assertEqual(len(listed), 9)
+        for item in listed:
+            folder = config.REPO / "exercises" / item["key"]
+            for name in ("README.md", "solution_template.py", "check.py"):
+                self.assertTrue((folder / name).exists(), f"{item['key']}/{name}")
+            self.assertFalse((folder / "solution.py").exists(), "answers are not shipped")
+            compile((folder / "check.py").read_text(encoding="utf-8"), str(folder / "check.py"), "exec")
+            compile((folder / "solution_template.py").read_text(encoding="utf-8"), "template", "exec")
+
+
 class RoadmapTest(TempHome):
     ITEM = {"arxiv_id": "2010.11929", "title": "ViT", "authors": "A, B", "year": 2020}
 
