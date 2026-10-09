@@ -1,4 +1,5 @@
-import { api, esc, toast, confirmDialog, authorsShort, STATUS, $ } from "../util.js";
+import { api, esc, toast, confirmDialog, authorsShort, DEPTH, STATUS, $ } from "../util.js";
+import { roadmapTabs } from "./practice.js";
 
 const KINDS = ["기초", "논문", "새 영역"];
 const state = { kind: "all", open: null, editingWhy: null };
@@ -18,7 +19,7 @@ function itemRow(track, p, i) {
       <button class="icon-btn" data-act="why" aria-label="읽는 이유 수정" title="읽는 이유 수정">✎</button>
       <button class="icon-btn" data-act="remove" aria-label="트랙에서 빼기" title="트랙에서 빼기">✕</button></span>` : "";
   const side = p.paper_id
-    ? `<span class="chip ${esc(p.status)}">${STATUS[p.status]}</span>`
+    ? `${p.depth ? `<span class="chip depth-chip" title="이해 깊이">${p.depth} ${DEPTH[p.depth].short}</span>` : ""}<span class="chip ${esc(p.status)}">${STATUS[p.status]}</span>`
     : `<button class="btn sm" data-add="${esc(p.arxiv_id)}">추가</button>`;
   return `<li><span class="n">${i + 1}</span>
     <div>${title}<div class="paper-meta">${esc([authorsShort(p.authors, 2), p.year].filter(Boolean).join(" · "))}</div>${why}</div>
@@ -29,6 +30,7 @@ function trackCard(t) {
   const done = t.papers.filter((p) => p.status === "done").length;
   const missing = t.papers.filter((p) => !p.paper_id).length;
   const pct = t.papers.length ? (done / t.papers.length) * 100 : 0;
+  const deep = t.papers.filter((p) => p.depth >= 3).length;
   const key = esc(t.key);
   return `<details class="card track" data-key="${key}" ${state.open.has(t.key) ? "open" : ""}>
     <summary><div class="track-head">
@@ -36,7 +38,7 @@ function trackCard(t) {
         <strong style="font-size:16px;margin-left:4px">${esc(t.name)}</strong>
         ${t.description ? `<div class="small muted" style="margin-top:4px">${esc(t.description)}</div>` : ""}
         ${showStartHint && t.start_hint ? `<div class="small" style="margin-top:4px;color:var(--good)">${esc(t.start_hint)}</div>` : ""}</div>
-      <span class="small muted">${done} / ${t.papers.length}편 완독</span>
+      <span class="small muted">${done} / ${t.papers.length}편 완독${deep ? ` · 유도 이상 ${deep}편` : ""}</span>
       <div class="meter"><i style="width:${pct}%"></i></div></div></summary>
     ${t.papers.length ? `<ol class="track-list">${t.papers.map((p, i) => itemRow(t, p, i)).join("")}</ol>`
       : `<p class="muted" style="margin-top:14px">아직 논문이 없어요. 아래에서 arXiv ID나 링크로 추가하세요.</p>`}
@@ -64,6 +66,7 @@ export async function render(root, { alive }) {
   root.innerHTML = `<div class="page">
     <div class="page-head"><div><h1>로드맵</h1><p>분야별로 읽는 순서를 정리한 목록이에요. 기본 트랙의 논문은 모두 arXiv에서 확인한 것만 넣었어요.</p></div>
       <div class="head-actions"><button class="btn primary" id="new-track">새 트랙</button></div></div>
+    ${roadmapTabs("read")}
     <div class="toolbar"><div class="tabs" id="kind-tabs"></div></div>
     <div id="tracks"></div></div>
     <dialog id="track-dialog"><h2 id="track-dialog-title"></h2>
